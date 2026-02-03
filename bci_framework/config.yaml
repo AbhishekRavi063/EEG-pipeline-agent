@@ -1,0 +1,182 @@
+# BCI AutoML Platform v1.0 — Product-Grade Configuration
+# No code changes required for switching parameters or adding new pipelines.
+
+mode: "offline"  # offline | online (auto-disables non-causal steps in online)
+task: "motor_imagery"  # used for adaptive bands (e.g. motor imagery 8–30 Hz)
+
+dataset:
+  name: "BCI_IV_2a"
+  data_dir: "./data/BCI_IV_2a"
+  download_if_missing: true
+  subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+  # Per-trial segment length (seconds). BCI IV 2a protocol uses 3 s motor imagery; set to 4 if you want longer segments (GDF must have enough data).
+  trial_duration_seconds: 3
+  evaluation_mode: "subject_wise"  # or "cross_subject" / "loso" for leave-one-subject-out
+  train_test_split: 0.8
+  # trial = 80/20 split; sequential = first N trials calibration, rest live stream (like real BCI)
+  split_mode: "train_test"  # train_test | sequential
+  stream_calibration_trials: 20  # for sequential: first N trials = pipeline selection, rest = stream
+  split_level: "trial"  # trial | loso
+  loso_holdout_subject: null  # set to subject id for LOSO
+
+preprocessing:
+  notch_freq: 50  # 60 for US
+  notch_quality: 30
+  bandpass_low: 0.5
+  bandpass_high: 40
+  bandpass_order: 5
+  adaptive_motor_band: true  # if task == motor_imagery → use motor band below
+  motor_band_low: 8
+  motor_band_high: 30
+  reference: "car"  # car | laplacian
+  laplacian_neighbours: null  # optional mapping (channel->neighbours)
+
+advanced_preprocessing:
+  enabled: ["signal_quality", "ica", "wavelet"]
+  signal_quality:
+    variance_z: 5.0
+    kurtosis_z: 5.0
+    interpolate: true
+  ica:
+    n_components: 15
+    max_iter: 500
+  wavelet:
+    wavelet: "db4"
+    level: 4
+  asr:
+    cutoff: 20.0
+    window_sec: 0.5
+
+features:
+  csp:
+    n_components: 4
+  psd:
+    fmin: 1
+    fmax: 40
+    n_fft: 256
+  wavelet:
+    wavelet: "db4"
+    level: 4
+  riemannian:
+    n_components: 10
+
+classifiers:
+  lda: {}
+  svm:
+    C: 1.0
+    kernel: "rbf"
+    gamma: "scale"
+  random_forest:
+    n_estimators: 100
+    max_depth: 10
+  eegnet:
+    n_classes: 4
+    n_channels: 22
+    samples: 1000  # 4 sec @ 250 Hz
+    dropout: 0.25
+  transformer: {}  # placeholder
+
+pipelines:
+  # Auto-generate combinations (feature × classifier), or list explicit [feature, classifier] pairs
+  auto_generate: true
+  max_combinations: 20  # cap for performance (M4 Pro 16GB)
+  # Explicit pipelines: [["csp", "lda"], ["psd", "svm"], ...]
+  explicit: []
+
+# Calibration protocol: duration (trials), baseline evaluation, sliding-window adaptation
+calibration:
+  duration_trials: 50
+  baseline_min_trials: 30
+  sliding_window_adaptation: true
+
+# Real-time streaming: sliding window + full-dataset simulation
+streaming:
+  window_size_sec: 1.5
+  overlap_ratio: 0.5  # 50% overlap recommended
+  window_size_samples: null  # set from fs if null
+  # After best pipeline selected: stream full test set like real processing
+  stream_full_test_set: true  # stream all test trials (not just first N)
+  real_time_timing: true  # sleep so elapsed time = real-time (trial_duration_sec per trial)
+  trial_duration_sec: 3.0  # delay between trials in simulation (matches real BCI trial length)
+
+agent:
+  calibration_trials: 50
+  # Online mode: first N trials for calibration, rest live stream
+  calibration_window_trials: 5   # online: number of trials for initial calibration
+  top_n_pipelines: 3
+  trial_duration_sec: 3.0  # for ITR
+  prune_thresholds:
+    min_accuracy: 0.45
+    min_accuracy_online: 0.5    # online calibration early pruning
+    max_latency_ms: 500
+    max_latency_ms_online: 300  # online calibration latency cap
+    latency_budget_ms: 300      # product target: 100–300 ms
+    max_stability_variance: 0.05
+  re_evaluate_interval_trials: 100
+  metrics:
+    - "accuracy"
+    - "kappa"
+    - "itr_bits_per_minute"
+    - "f1_macro"
+    - "roc_auc_macro"
+    - "latency"
+    - "stability"
+    - "confidence"
+  drift:
+    window_size: 20
+    window_trials: 10           # rolling window for drift (alias: min trials in window)
+    min_trials_for_drift: 10
+    accuracy_drop_threshold: 0.15
+    min_accuracy_absolute: 0.35
+    min_accuracy_absolute_online: 0.6  # online: minimum acceptable accuracy
+    consecutive_low_windows: 2
+  hyperparameter_optimization:
+    enabled: false
+    backend: "optuna"  # optuna | grid
+    n_trials: 20
+    timeout_sec: 300
+    # Default param ranges for out-of-the-box tuning (CSP, bandpass, LDA)
+    param_ranges:
+      bandpass_highcut: [30, 40]
+      csp_n_components: [2, 4, 6]
+      lda_shrinkage: [0.0, 0.5, 1.0]
+      svm_C: [0.1, 1.0, 10.0]
+      svm_gamma: ["scale", "auto"]
+
+gui:
+  refresh_rate_ms: 100
+  eeg_channels_display: 8
+  window_seconds: 4
+  web_port: 8765  # port for --web UI; change if 8765 is in use (e.g. 8766)
+
+logging:
+  results_dir: "./results"
+  save_snapshots: true
+  save_all_pipelines: true  # selected and rejected
+  save_model_checkpoints: true  # .pkl / .pt per pipeline
+  snapshot_formats:
+    - "png"
+    - "json"
+  versioned_experiments: true  # results/<experiment_id>/<pipeline_name>/
+
+# Experiment tracking & reproducibility
+experiment:
+  seed: 42
+  experiment_id: null  # auto if null
+  mlflow:
+    enabled: false
+    tracking_uri: "./mlruns"
+    experiment_name: "bci_automl"
+
+# Compute: max pipelines in parallel (M4 Pro 16GB)
+compute:
+  max_parallel_pipelines: 5
+  use_gpu: true  # PyTorch MPS/CUDA if available
+
+# Future placeholders
+future:
+  real_eeg_hardware: null  # OpenBCI, Emotiv
+  mcp_llm_integration: false
+  cloud_training: false
+  reinforcement_learning_selector: false
+  human_in_the_loop_feedback: true

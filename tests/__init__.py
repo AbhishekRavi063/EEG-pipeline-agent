@@ -1,0 +1,1 @@
+"""BCI AutoML Platform tests."""
