@@ -11,13 +11,18 @@ dataset:
   subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9]
   # Per-trial segment length (seconds). BCI IV 2a protocol uses 3 s motor imagery; set to 4 if you want longer segments (GDF must have enough data).
   trial_duration_seconds: 3
-  evaluation_mode: "subject_wise"  # or "cross_subject" / "loso" for leave-one-subject-out
+  evaluation_mode: "subject_wise"  # or "cross_subject" / "loso" / "cross_session" for leave-one-subject-out
   train_test_split: 0.8
+  # IMPORTANT: For BCI IV 2a, use_cross_session_split: true prevents mixing T/E sessions
+  # This avoids data leakage and suspiciously high accuracy (reviewers expect T/E split)
+  use_cross_session_split: true  # Set true for T session (train) / E session (test) split (METHODOLOGICALLY CORRECT)
   # trial = 80/20 split; sequential = first N trials calibration, rest live stream (like real BCI)
   split_mode: "train_test"  # train_test | sequential
   stream_calibration_trials: 20  # for sequential: first N trials = pipeline selection, rest = stream
   split_level: "trial"  # trial | loso
   loso_holdout_subject: null  # set to subject id for LOSO
+  # Streaming mode: "trial" (per-trial batch) or "sliding" (true sliding-window real-time)
+  streaming_mode: "trial"  # "trial" | "sliding"
 
 preprocessing:
   notch_freq: 50  # 60 for US
@@ -32,7 +37,18 @@ preprocessing:
   laplacian_neighbours: null  # optional mapping (channel->neighbours)
 
 advanced_preprocessing:
-  enabled: ["signal_quality", "ica", "wavelet"]
+  # Scientific order enforced: signal_quality -> gedai -> ica -> asr -> wavelet
+  # GEDAI runs BEFORE ICA to improve source separation (physics-based denoising first)
+  enabled: ["signal_quality", "gedai", "ica", "wavelet"]
+  gedai:
+    leadfield_path: null   # path to .pt/.npy leadfield; generate with: python -m bci_framework.preprocessing.forward_model
+    use_identity_if_missing: true  # Research mode: require real leadfield (set true for dev/testing)
+    require_real_leadfield: false    # Enforce physics correctness (false allows identity fallback)
+    mode: "batch"          # "batch" (offline) or "sliding" (online, causal, low-latency)
+    window_sec: 10.0       # Sliding window duration (for mode="sliding")
+    update_interval_sec: 1.0  # How often to recompute eigenvectors (for sliding mode)
+    device: null           # "cpu", "cuda", "mps", or null (auto-detect GPU)
+    cov_recompute_post_gedai: false  # For CSP compatibility (recompute covariance after GEDAI)
   signal_quality:
     variance_z: 5.0
     kurtosis_z: 5.0
@@ -50,6 +66,8 @@ advanced_preprocessing:
 features:
   csp:
     n_components: 4
+    use_cv_fitting: null  # null = auto (CV if n_trials < 30), true = always CV, false = never CV
+    cv_folds: 5  # K-fold CV (or null for leave-one-trial-out if n_trials < 10)
   psd:
     fmin: 1
     fmax: 40
@@ -91,9 +109,14 @@ calibration:
 
 # Real-time streaming: sliding window + full-dataset simulation
 streaming:
-  window_size_sec: 1.5
-  overlap_ratio: 0.5  # 50% overlap recommended
+  # Mode: "trial" (per-trial batch) or "sliding" (true sliding-window real-time)
+  mode: "trial"  # "trial" | "sliding"
+  window_size_sec: 1.5  # Sliding window size (for sliding mode)
+  overlap_ratio: 0.5  # 50% overlap recommended (for trial mode)
   window_size_samples: null  # set from fs if null
+  # Sliding-window specific settings
+  buffer_length_sec: 10.0  # Ring buffer length (for sliding mode)
+  update_interval_sec: 0.1  # How often to trigger inference (e.g., 100ms)
   # After best pipeline selected: stream full test set like real processing
   stream_full_test_set: true  # stream all test trials (not just first N)
   real_time_timing: true  # sleep so elapsed time = real-time (trial_duration_sec per trial)

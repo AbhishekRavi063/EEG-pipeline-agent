@@ -352,19 +352,35 @@ def main() -> None:
     ds_cfg = config.get("dataset", {})
     split_level = ds_cfg.get("split_level", "trial")
     loso_subject = args.loso or ds_cfg.get("loso_holdout_subject")
+    n_trials_from_t = getattr(dataset, "n_trials_from_t", None)
 
     # Split: train_test (80/20) or sequential (first N = calibration, rest = live stream)
     split_mode = ds_cfg.get("split_mode", "train_test")
     n_cal = ds_cfg.get("stream_calibration_trials", 20)
+    use_cross_session = ds_cfg.get("use_cross_session_split", False)  # T/E split for BCI IV 2a
+    evaluation_mode = ds_cfg.get("evaluation_mode", "subject_wise")
+    
+    # METHODOLOGICAL WARNING: For BCI IV 2a, cross-session split (T/E) is recommended
+    # to avoid mixing sessions and suspiciously high accuracy
+    if evaluation_mode == "subject_wise" and not use_cross_session and n_trials_from_t is not None:
+        logger.warning(
+            "⚠️  METHODOLOGICAL WARNING: Using subject_wise split with shuffle=True "
+            "MIXES T and E sessions. This can cause data leakage and suspiciously high accuracy. "
+            "For BCI IV 2a, set use_cross_session_split: true in config.yaml "
+            "or evaluation_mode: 'cross_session' to use T session (train) / E session (test) split."
+        )
+    
     train_idx, test_idx = get_train_test_trials(
         len(X),
         subject_ids=subject_ids,
-        evaluation_mode=ds_cfg.get("evaluation_mode", "subject_wise"),
+        evaluation_mode=evaluation_mode,
         train_ratio=ds_cfg.get("train_test_split", 0.8),
         loso_subject=loso_subject,
         random_state=seed,
         split_mode=split_mode,
         n_calibration_trials=n_cal,
+        n_trials_from_t=n_trials_from_t,
+        use_cross_session=use_cross_session,
     )
     X_train, X_test = X[train_idx], X[test_idx]
     y_train, y_test = y[train_idx], y[test_idx]
@@ -502,12 +518,152 @@ def main() -> None:
     import time
 
     stream_cfg = config.get("streaming", {})
+    dataset_cfg = config.get("dataset", {})
+    streaming_mode = dataset_cfg.get("streaming_mode", "trial") or stream_cfg.get("mode", "trial")
     stream_full = stream_cfg.get("stream_full_test_set", True)
     real_time = stream_cfg.get("real_time_timing", True)
     trial_dur_sec = stream_cfg.get("trial_duration_sec", config.get("agent", {}).get("trial_duration_sec", 3.0))
     n_stream = len(X_test) if stream_full else min(50, len(X_test))
     app.set_trial_progress(0, n_stream)
 
+    # Check if sliding-window mode is enabled
+    if streaming_mode == "sliding":
+        logger.info(
+            "Sliding-window real-time streaming: %d trials through best pipeline %s",
+            n_stream, best_pipeline.name,
+        )
+        # Import streaming modules
+        from bci_framework.streaming import RealtimeInferenceEngine
+        
+        # Configure sliding window parameters
+        window_size_sec = stream_cfg.get("window_size_sec", 1.5)
+        update_interval_sec = stream_cfg.get("update_interval_sec", 0.1)
+        buffer_length_sec = stream_cfg.get("buffer_length_sec", 10.0)
+        
+        # Ensure pipeline uses online/causal preprocessing
+        # Update config and preprocessing manager mode for causal filters
+        config_stream = copy.deepcopy(config)
+        config_stream["mode"] = "online"
+        # Enable GEDAI sliding mode if GEDAI is enabled
+        if "gedai" in config_stream.get("advanced_preprocessing", {}).get("enabled", []):
+            gedai_cfg = config_stream.get("advanced_preprocessing", {}).get("gedai", {})
+            if gedai_cfg.get("mode", "batch") != "sliding":
+                logger.info("Enabling GEDAI sliding mode for real-time streaming")
+                gedai_cfg["mode"] = "sliding"
+        best_pipeline.preprocessing_manager.config = config_stream
+        best_pipeline.preprocessing_manager.mode = "online"
+        # Enable causal filters in mandatory preprocessing steps
+        if hasattr(best_pipeline.preprocessing_manager.mandatory, "notch"):
+            best_pipeline.preprocessing_manager.mandatory.notch.causal = True
+        if hasattr(best_pipeline.preprocessing_manager.mandatory, "bandpass"):
+            best_pipeline.preprocessing_manager.mandatory.bandpass.causal = True
+        # Update GEDAI mode if present in advanced steps
+        for name, step in best_pipeline.preprocessing_manager.advanced_steps:
+            if name == "gedai" and hasattr(step, "mode"):
+                if step.mode != "sliding":
+                    logger.info("Switching GEDAI to sliding mode for real-time streaming")
+                    step.mode = "sliding"
+                    step.supports_online = True
+        
+        # Initialize inference engine
+        inference_engine = RealtimeInferenceEngine(
+            pipeline=best_pipeline,
+            fs=fs,
+            window_size_sec=window_size_sec,
+            update_interval_sec=update_interval_sec,
+            buffer_length_sec=buffer_length_sec,
+            n_channels=len(channel_names),
+        )
+        
+        def data_callback():
+            return (app._raw_buffer, app._filtered_buffer)
+        
+        def run_sliding_streaming():
+            """Stream trials sample-by-sample with sliding window inference."""
+            n_samples_per_trial = int(trial_dur_sec * fs)
+            sample_interval = 1.0 / fs  # Time between samples
+            
+            for trial_idx in range(n_stream):
+                trial_data = X_test[trial_idx : trial_idx + 1]  # (1, n_channels, n_samples)
+                trial_label = y_test[trial_idx] if trial_idx < len(y_test) else -1
+                
+                # Convert to (n_channels, n_samples) for streaming
+                trial_channel_data = trial_data[0]  # (n_channels, n_samples)
+                
+                # Stream samples one by one
+                for sample_idx in range(n_samples_per_trial):
+                    if sample_idx >= trial_channel_data.shape[1]:
+                        break
+                    
+                    # Push single sample (n_channels,)
+                    sample = trial_channel_data[:, sample_idx]
+                    inference_engine.push_samples(sample)
+                    
+                    # Check if inference should run
+                    result = inference_engine.update()
+                    if result is not None:
+                        prediction, latency_ms = result
+                        pred_label = int(prediction[0])
+                        
+                        # Update GUI
+                        if app:
+                            # Get current window for display
+                            window = inference_engine._buffer.get_window(window_size_sec)
+                            if window is not None:
+                                window_trial = window[np.newaxis, :, :]
+                                app.set_raw_buffer(window_trial[0])
+                                X_filt = best_pipeline.preprocess(window_trial)
+                                app.set_filtered_buffer(X_filt[0])
+                                app.set_prediction(pred_label)
+                                app.set_trial_progress(trial_idx, n_stream)
+                    
+                    # Real-time pacing: sleep for sample interval
+                    if real_time:
+                        time.sleep(sample_interval)
+                
+                # Log latency stats periodically
+                if (trial_idx + 1) % 10 == 0:
+                    stats = inference_engine.get_latency_stats()
+                    logger.info(
+                        "Trial %d/%d: latency mean=%.2fms, median=%.2fms, max=%.2fms",
+                        trial_idx + 1, n_stream,
+                        stats["mean_ms"], stats["median_ms"], stats["max_ms"],
+                    )
+            
+            # Final latency stats
+            stats = inference_engine.get_latency_stats()
+            logger.info(
+                "Sliding-window streaming finished: %d trials, %d predictions. "
+                "Latency: mean=%.2fms, median=%.2fms, max=%.2fms, min=%.2fms",
+                n_stream, stats["n_predictions"],
+                stats["mean_ms"], stats["median_ms"], stats["max_ms"], stats["min_ms"],
+            )
+        
+        # Seed GUI with first window
+        if not args.no_gui and n_stream > 0:
+            first_trial = X_test[0:1]
+            app.set_raw_buffer(first_trial[0])
+            X_filt_first = best_pipeline.preprocess(first_trial)
+            app.set_filtered_buffer(X_filt_first[0])
+            app.set_prediction(int(best_pipeline.predict(first_trial)[0]))
+            app.set_trial_progress(0, n_stream)
+        
+        if not args.no_gui:
+            logger.info(
+                "Opening GUI for sliding-window stream with best pipeline: %s (%d test trials). Close window to exit.",
+                best_pipeline.name, n_stream,
+            )
+            import threading
+            sim_thread = threading.Thread(target=run_sliding_streaming, daemon=True)
+            sim_thread.start()
+            app.run(data_callback=data_callback)
+        else:
+            # Headless: run sliding streaming
+            run_sliding_streaming()
+        
+        return
+    
+    # Original trial-based streaming mode
     logger.info(
         "Real-time streaming: %d trials through best pipeline %s (real_time=%s, %.1fs per trial)",
         n_stream, best_pipeline.name, real_time, trial_dur_sec,
