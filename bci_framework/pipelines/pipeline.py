@@ -84,6 +84,27 @@ class Pipeline:
         latency_ms = (time.perf_counter() - t0) * 1000
         return pred, latency_ms
 
+    def predict_stream(self, X: np.ndarray) -> np.ndarray:
+        """
+        Predict on streaming window data (same as predict, but explicitly for streaming).
+        
+        This method is identical to predict() but exists for clarity when used
+        in streaming contexts. It ensures preprocessing is causal (no future samples).
+        
+        Parameters
+        ----------
+        X : np.ndarray
+            Shape (n_trials, n_channels, n_samples) - typically n_trials=1 for streaming
+        
+        Returns
+        -------
+        predictions : np.ndarray
+            Shape (n_trials,) with predicted class indices
+        """
+        # For streaming, ensure we're using causal preprocessing
+        # The PreprocessingManager already handles this based on mode="online"
+        return self.predict(X)
+
     @property
     def advanced_preprocessing(self) -> list[str]:
         return self.preprocessing_manager.enabled_advanced_steps()
