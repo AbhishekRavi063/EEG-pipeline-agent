@@ -2,6 +2,20 @@ BCI AutoML Platform — Full Project Overview
 
 A modular, research-grade Motor Imagery BCI framework in Python. It loads EEG data (BCI IV 2a or MOABB), runs a configurable pipeline (preprocessing, spatial filter, features, optional domain adaptation, classifier), uses an AutoML-style agent to select the best pipeline, and provides desktop and web GUIs plus multi-subject tables and statistical comparison (Pipeline A vs B with p-values). Designed for no data leakage, reproducibility, modularity (config-driven; pluggable datasets, features, classifiers), and research workflow (subject-level tables, p-values, publishable code).
 
+Quick start
+
+  1. Install: cd into the project, create a venv, activate it, run pip install -r requirements.txt. Put BCI IV 2a GDF files in data/BCI_IV_2a/ or run scripts/download_bci_iv_2a.sh.
+
+  2. Run single-subject (desktop GUI): PYTHONPATH=. python main.py --subject 1
+     Use --subject 2, --subject 3, … up to 9 to pick subject A02, A03, … A09. Subject 1 = A01.
+
+  3. Run with web UI: PYTHONPATH=. python main.py --subject 1 --web
+     Then open http://127.0.0.1:8765 (Home) and http://127.0.0.1:8765/compare (Pipeline A vs B). To skip GEDAI/leadfield: ./venv/bin/python scripts/run_web_interface.py (subject is still chosen in config or when you start main.py with --subject N).
+
+  4. No GUI (calibration and logs only): PYTHONPATH=. python main.py --no-gui --subject 1
+
+  5. Compare pipelines on multiple subjects: use the Compare page in the web UI; set "Subjects" to e.g. 1 2 3 and run the comparison. Or use scripts/run_multi_subject_tables.py with subjects in config.
+
 
 1. What This Project Does
 
