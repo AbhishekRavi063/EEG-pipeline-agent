@@ -11,7 +11,13 @@ from .manager import (
 from .notch import NotchFilter
 from .reference import CommonAverageReference, LaplacianReference
 from .signal_quality import SignalQualityMonitor
+from .spatial_filters import (
+    SPATIAL_FILTER_REGISTRY,
+    SpatialFilterBase,
+    get_spatial_filter,
+)
 from .wavelet import WaveletDenoising
+from .subject_norm import subject_standardize, subject_standardize_per_subject
 
 __all__ = [
     "PreprocessingBase",
@@ -23,7 +29,12 @@ __all__ = [
     "MandatoryPreprocessingPipeline",
     "PreprocessingManager",
     "ADVANCED_PREPROCESSING_REGISTRY",
+    "SPATIAL_FILTER_REGISTRY",
+    "SpatialFilterBase",
+    "get_spatial_filter",
     "WaveletDenoising",
     "ASRArtifactRemoval",
     "SignalQualityMonitor",
+    "subject_standardize",
+    "subject_standardize_per_subject",
 ]

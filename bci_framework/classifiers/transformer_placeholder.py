@@ -14,10 +14,18 @@ class TransformerClassifier(ClassifierBase):
         super().__init__(n_classes=n_classes, **kwargs)
         self._fallback = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "TransformerClassifier":
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+    ) -> "TransformerClassifier":
         from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
         self._fallback = LinearDiscriminantAnalysis()
-        self._fallback.fit(X, y)
+        if sample_weight is not None:
+            self._fallback.fit(X, y, sample_weight=sample_weight)
+        else:
+            self._fallback.fit(X, y)
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:

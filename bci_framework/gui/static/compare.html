@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pipeline A vs B — Statistical Comparison</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f5f6f8;
+      color: #1a1d21;
+      line-height: 1.5;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+    .page {
+      width: 100%;
+      max-width: 100%;
+      margin: 0;
+      padding: 20px;
+      overflow-x: hidden;
+    }
+    h1 { font-size: 1.35rem; margin: 0 0 16px 0; font-weight: 600; color: #111; }
+    .nav { margin-bottom: 24px; }
+    .nav a { color: #2563eb; text-decoration: none; margin-right: 16px; font-size: 0.95rem; }
+    .nav a:hover { text-decoration: underline; }
+
+    .panel {
+      background: #fff;
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+      border: 1px solid #e5e7eb;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .panel--form { width: 100%; max-width: none; }
+    .panel--results {
+      width: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
+      overflow-y: visible;
+    }
+    .panel h2 { font-size: 1.05rem; margin: 0 0 16px 0; color: #374151; font-weight: 600; }
+    .panel h3 { font-size: 0.98rem; margin: 20px 0 10px 0; color: #374151; font-weight: 600; }
+    .panel h3:first-child { margin-top: 0; }
+    .panel h4 { font-size: 0.9rem; margin: 0 0 10px 0; color: #4b5563; font-weight: 600; }
+
+    label { display: block; margin-bottom: 6px; font-size: 0.9rem; color: #6b7280; }
+    input[type="text"], textarea, select {
+      width: 100%;
+      max-width: 420px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      background: #fff;
+      color: #1a1d21;
+      font-size: 0.9rem;
+    }
+    input:focus, textarea:focus, select:focus {
+      outline: none;
+      border-color: #2563eb;
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+    }
+    textarea { min-height: 80px; font-family: ui-monospace, monospace; resize: vertical; }
+    .row { margin-bottom: 14px; }
+    button {
+      padding: 10px 22px;
+      border-radius: 8px;
+      border: none;
+      background: #2563eb;
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }
+    button:hover { background: #1d4ed8; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn-secondary {
+      padding: 8px 14px;
+      margin-bottom: 12px;
+      font-size: 0.85rem;
+      background: #f3f4f6;
+      color: #374151;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .btn-secondary:hover { background: #e5e7eb; }
+
+    .status { margin-top: 14px; font-size: 0.9rem; color: #6b7280; }
+    .status.error { color: #dc2626; }
+    .status.success { color: #059669; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+    @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+    .col { min-width: 0; }
+
+    #results { margin-top: 24px; width: 100%; overflow-x: hidden; }
+    .results-panel { padding: 20px; }
+    .two-tables {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 24px;
+      align-items: start;
+      width: 100%;
+      min-width: 0;
+    }
+    @media (max-width: 900px) {
+      .two-tables { grid-template-columns: 1fr; }
+    }
+    .table-block {
+      min-width: 0;
+      width: 100%;
+      max-width: 100%;
+      display: flex;
+      flex-direction: column;
+      background: #fafafa;
+      border-radius: 8px;
+      padding: 12px;
+      border: 1px solid #e5e7eb;
+      overflow: hidden;
+    }
+    .table-block h3 {
+      margin: 0 0 10px 0;
+      font-size: 0.95rem;
+      color: #374151;
+      flex-shrink: 0;
+    }
+    .table-wrapper {
+      overflow-x: auto;
+      overflow-y: visible;
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      -webkit-overflow-scrolling: touch;
+    }
+    .table-wrapper table {
+      width: 100%;
+      table-layout: fixed;
+      border-collapse: collapse;
+    }
+    .table-wrapper table.data-table {
+      table-layout: auto;
+      width: max-content;
+      min-width: 100%;
+    }
+
+    table {
+      border-collapse: collapse;
+      font-size: 0.8rem;
+    }
+    th, td {
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    .table-wrapper table.data-table th,
+    .table-wrapper table.data-table td {
+      white-space: nowrap;
+    }
+    th {
+      color: #6b7280;
+      font-weight: 600;
+      background: #f9fafb;
+    }
+    td { color: #1a1d21; }
+    tr:hover td { background: #f9fafb; }
+
+    .comparison-section {
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid #e5e7eb;
+      width: 100%;
+      min-width: 0;
+    }
+    .comparison-section h3 { margin-top: 0; }
+    .comparison-wrapper {
+      width: 100%;
+      overflow-x: auto;
+      min-width: 0;
+      -webkit-overflow-scrolling: touch;
+    }
+    .comparison-wrapper table.comparison-table {
+      width: 100%;
+      table-layout: fixed;
+    }
+    .comparison-table th, .comparison-table td {
+      white-space: normal;
+      word-break: break-word;
+    }
+    .comparison-table td:nth-child(1) { font-weight: 600; }
+    .comparison-table td.sig { color: #059669; }
+    .comparison-table td.ns { color: #6b7280; }
+
+    .no-data { color: #6b7280; font-size: 0.9rem; padding: 12px 0; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Pipeline A vs B — Statistical Comparison</h1>
+    <div class="nav"><a href="/">← Live EEG</a></div>
+
+    <div class="panel panel--form">
+      <h2>Settings (same subjects for both pipelines)</h2>
+      <div class="row">
+        <label>Dataset (MOABB name)</label>
+        <input type="text" id="dataset" value="BNCI2014_001" placeholder="BNCI2014_001">
+      </div>
+      <div class="row">
+        <label>Subjects (space or comma separated)</label>
+        <input type="text" id="subjects" value="1 2 3" placeholder="1 2 3">
+      </div>
+
+      <h3>Simple: change one option (Pipeline A vs B)</h3>
+      <p style="margin:0 0 14px 0; font-size:0.85rem; color:#6b7280;">Same parameters for both; change one dropdown for B to compare (e.g. Classifier A = LR, Classifier B = SVM).</p>
+      <div class="grid-2">
+        <div class="col">
+          <h4>Pipeline A</h4>
+          <div class="row">
+            <label>Feature</label>
+            <select id="featureA">
+              <option value="filter_bank_riemann" selected>filter_bank_riemann</option>
+              <option value="csp">csp</option>
+              <option value="riemannian">riemannian</option>
+              <option value="covariance">covariance</option>
+              <option value="riemann_tangent_oas">riemann_tangent_oas</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>Classifier</label>
+            <select id="classifierA">
+              <option value="logistic_regression" selected>logistic_regression</option>
+              <option value="lda">lda</option>
+              <option value="svm">svm</option>
+              <option value="random_forest">random_forest</option>
+              <option value="rsa_mlp">rsa_mlp</option>
+              <option value="mdm">mdm</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>Spatial filter</label>
+            <select id="spatialA">
+              <option value="laplacian_auto" selected>laplacian_auto</option>
+              <option value="car">car</option>
+            </select>
+          </div>
+        </div>
+        <div class="col">
+          <h4>Pipeline B</h4>
+          <button type="button" id="copyAtoB" class="btn-secondary">Copy A → B</button>
+          <div class="row">
+            <label>Feature</label>
+            <select id="featureB">
+              <option value="filter_bank_riemann" selected>filter_bank_riemann</option>
+              <option value="csp">csp</option>
+              <option value="riemannian">riemannian</option>
+              <option value="covariance">covariance</option>
+              <option value="riemann_tangent_oas">riemann_tangent_oas</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>Classifier</label>
+            <select id="classifierB">
+              <option value="logistic_regression" selected>logistic_regression</option>
+              <option value="lda">lda</option>
+              <option value="svm">svm</option>
+              <option value="random_forest">random_forest</option>
+              <option value="rsa_mlp">rsa_mlp</option>
+              <option value="mdm">mdm</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>Spatial filter</label>
+            <select id="spatialB">
+              <option value="laplacian_auto" selected>laplacian_auto</option>
+              <option value="car">car</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <h3>Advanced (config paths / override JSON)</h3>
+      <p style="margin:0 0 12px 0; font-size:0.85rem; color:#6b7280;">Leave empty to use Simple dropdowns above.</p>
+      <div class="row">
+        <label>Pipeline A — config path (optional)</label>
+        <input type="text" id="configA" value="" placeholder="bci_framework/config.yaml">
+      </div>
+      <div class="row">
+        <label>Pipeline B — config path (optional)</label>
+        <input type="text" id="configB" value="" placeholder="Or use override_b for same config + one change">
+      </div>
+      <div class="row">
+        <label>Override for B (JSON, merged over A)</label>
+        <textarea id="overrideB" placeholder='{"pipelines":{"explicit":[["filter_bank_riemann","svm"]]}}'></textarea>
+      </div>
+      <div class="row">
+        <label>Test</label>
+        <select id="test">
+          <option value="ttest">Paired t-test</option>
+          <option value="wilcoxon">Wilcoxon signed-rank</option>
+        </select>
+      </div>
+      <button id="runBtn">Run comparison</button>
+      <div class="status" id="status"></div>
+    </div>
+
+    <div id="results"></div>
+  </div>
+
+  <script>
+    const runBtn = document.getElementById('runBtn');
+    const statusEl = document.getElementById('status');
+    const resultsEl = document.getElementById('results');
+
+    function setStatus(msg, isError) {
+      statusEl.textContent = msg;
+      statusEl.className = 'status' + (isError ? ' error' : ' success');
+    }
+
+    function parseSubjects(str) {
+      return str.replace(/,/g, ' ').trim().split(/\s+/).filter(Boolean).map(s => parseInt(s, 10)).filter(n => !isNaN(n));
+    }
+
+    document.getElementById('copyAtoB').addEventListener('click', () => {
+      document.getElementById('featureB').value = document.getElementById('featureA').value;
+      document.getElementById('classifierB').value = document.getElementById('classifierA').value;
+      document.getElementById('spatialB').value = document.getElementById('spatialA').value;
+    });
+
+    runBtn.addEventListener('click', async () => {
+      const dataset = document.getElementById('dataset').value.trim() || 'BNCI2014_001';
+      const subjects = parseSubjects(document.getElementById('subjects').value) || [1, 2, 3];
+      const configPathA = document.getElementById('configA').value.trim() || null;
+      const configPathB = document.getElementById('configB').value.trim() || null;
+      const overrideStr = document.getElementById('overrideB').value.trim();
+      const test = document.getElementById('test').value;
+
+      let overrideB = null;
+      if (overrideStr) {
+        try {
+          overrideB = JSON.parse(overrideStr);
+        } catch (e) {
+          setStatus('Invalid override_b JSON: ' + e.message, true);
+          return;
+        }
+      }
+
+      const useSimple = !configPathA && !configPathB && !overrideStr;
+      const body = {
+        dataset,
+        subjects,
+        name_a: 'Pipeline_A',
+        name_b: 'Pipeline_B',
+        test,
+      };
+      if (useSimple) {
+        body.pipeline_a = {
+          feature: document.getElementById('featureA').value,
+          classifier: document.getElementById('classifierA').value,
+          spatial: document.getElementById('spatialA').value,
+        };
+        body.pipeline_b = {
+          feature: document.getElementById('featureB').value,
+          classifier: document.getElementById('classifierB').value,
+          spatial: document.getElementById('spatialB').value,
+        };
+      } else {
+        body.config_path_a = configPathA;
+        body.config_path_b = configPathB;
+        body.override_b = overrideB;
+      }
+
+      runBtn.disabled = true;
+      setStatus('Running LOSO for both pipelines (this may take several minutes)…', false);
+      resultsEl.innerHTML = '';
+
+      try {
+        const res = await fetch('/api/compare_pipelines', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.error) {
+          setStatus('Error: ' + data.error, true);
+          return;
+        }
+        setStatus('Done. See results below.', false);
+        renderResults(data);
+      } catch (e) {
+        setStatus('Request failed: ' + e.message, true);
+      } finally {
+        runBtn.disabled = false;
+      }
+    });
+
+    function escapeHtml(str) {
+      if (str == null) return '';
+      const s = String(str);
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function tableToHtml(table, title) {
+      if (!table || table.length === 0) return '<div class="table-block"><h3>' + escapeHtml(title) + '</h3><p class="no-data">No data</p></div>';
+      const cols = Object.keys(table[0]);
+      let html = '<div class="table-block"><h3>' + escapeHtml(title) + '</h3>';
+      html += '<div class="table-wrapper"><table class="data-table"><thead><tr>';
+      cols.forEach(c => { html += '<th>' + escapeHtml(c) + '</th>'; });
+      html += '</tr></thead><tbody>';
+      table.forEach(row => {
+        html += '<tr>';
+        cols.forEach(c => { html += '<td>' + escapeHtml(row[c] != null ? row[c] : '') + '</td>'; });
+        html += '</tr>';
+      });
+      html += '</tbody></table></div></div>';
+      return html;
+    }
+
+    function renderResults(data) {
+      let html = '<div class="panel panel--results results-panel"><h2>Results</h2>';
+      html += '<div class="two-tables">';
+      html += tableToHtml(data.table_a, 'Pipeline A (subjects × metrics)');
+      html += tableToHtml(data.table_b, 'Pipeline B (subjects × metrics)');
+      html += '</div>';
+      if (data.comparison && Object.keys(data.comparison).length > 0) {
+        html += '<div class="comparison-section"><h3>Statistical comparison (p-values)</h3>';
+        html += '<div class="comparison-wrapper"><table class="comparison-table"><thead><tr><th>Metric</th><th>Mean A</th><th>Mean B</th><th>Delta</th><th>p-value</th><th>Significant (α=0.05)</th></tr></thead><tbody>';
+        for (const [metric, r] of Object.entries(data.comparison)) {
+          const sig = r.significant ? 'Yes' : 'No';
+          const sigCl = r.significant ? 'sig' : 'ns';
+          const mean1 = r.mean_1 != null ? r.mean_1.toFixed(4) : '';
+          const mean2 = r.mean_2 != null ? r.mean_2.toFixed(4) : '';
+          const delta = r.mean_delta != null ? r.mean_delta.toFixed(4) : '';
+          const pval = r.p_value != null ? r.p_value.toFixed(4) : '';
+          html += '<tr><td>' + escapeHtml(metric) + '</td><td>' + mean1 + '</td><td>' + mean2 + '</td><td>' + delta + '</td><td>' + pval + '</td><td class="' + sigCl + '">' + sig + '</td></tr>';
+        }
+        html += '</tbody></table></div></div>';
+      }
+      html += '</div>';
+      resultsEl.innerHTML = html;
+    }
+  </script>
+</body>
+</html>

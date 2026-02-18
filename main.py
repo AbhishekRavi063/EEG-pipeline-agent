@@ -392,6 +392,11 @@ def main() -> None:
     else:
         logger.info("Trial-wise split: train %d, test %d (no leakage)", len(train_idx), len(test_idx))
 
+    # v3.1: inject spatial capabilities (from loader/dataset) so registry and preprocessing resolve strict/auto
+    caps = getattr(dataset, "capabilities", None) or getattr(loader, "capabilities", None)
+    if caps is not None:
+        config["spatial_capabilities"] = caps
+
     # 2) Build pipelines
     registry = PipelineRegistry(config)
     pipelines = registry.build_pipelines(fs=fs, n_classes=n_classes, channel_names=channel_names)
@@ -413,7 +418,10 @@ def main() -> None:
     )
     pipelines_kept = agent.prune(pipelines)
     agent.select_top_n(pipelines_kept)
-    best_pipeline = agent.select_best()
+    try:
+        best_pipeline = agent.select_best(pipelines)  # v3.2: argmax CV over all valid
+    except RuntimeError:
+        best_pipeline = None
 
     # 4) Snapshot logging for all pipelines (selected and rejected)
     log_cfg = config.get("logging", {})
@@ -438,10 +446,36 @@ def main() -> None:
             snapshot.save_accuracy_curve(pipe.name, m.accuracies_over_time or [m.accuracy])
             snapshot.save_confusion_matrix(pipe.name, y_test, pred, class_names=dataset.class_names)
             meta = agent.get_metrics_dict().get(pipe.name, {})
+            mand = getattr(pipe.preprocessing_manager, "mandatory", None)
+            spatial_req = getattr(mand, "spatial_filter_requested", None)
+            spatial_used = getattr(mand, "spatial_filter_used", None)
+            cap_dict = None
+            if config.get("spatial_capabilities") is not None:
+                c = config["spatial_capabilities"]
+                cap_dict = c.to_dict() if hasattr(c, "to_dict") else c
+            transfer_info = None
+            if config.get("transfer", {}).get("enabled"):
+                tc = config["transfer"]
+                transfer_info = {
+                    "method": tc.get("method", "none"),
+                    "regularization": tc.get("regularization"),
+                    "safe_mode": tc.get("safe_mode"),
+                }
+            best_name = best_pipeline.name if best_pipeline is not None else None
+            adaptive = agent.get_adaptive_pruning_info() if hasattr(agent, "get_adaptive_pruning_info") else {}
             snapshot.save_json_log(
                 pipe.name,
                 meta,
                 selected=(best_pipeline is not None and pipe.name == best_pipeline.name),
+                spatial_capabilities=cap_dict,
+                spatial_filter_requested=spatial_req,
+                spatial_filter_used=spatial_used,
+                transfer=transfer_info,
+                best_pipeline=best_name,
+                quick_screening=adaptive.get("quick_screening"),
+                early_stopped_pipelines=adaptive.get("early_stopped_pipelines"),
+                progressive_halving_used=adaptive.get("progressive_halving_used"),
+                adaptive_pruning=adaptive.get("adaptive_pruning"),
             )
         if log_cfg.get("save_model_checkpoints", False) and pipe._fitted:
             try:

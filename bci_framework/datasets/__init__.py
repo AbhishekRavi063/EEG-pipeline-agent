@@ -11,12 +11,20 @@ __all__ = [
     "SyntheticEEGLoader",
     "generate_synthetic_mi_eeg",
     "generate_synthetic_mi_eeg_for_ci",
+    "DATASET_REGISTRY",
+    "get_dataset_loader",
 ]
 
 DATASET_REGISTRY: dict[str, type] = {
     "BCI_IV_2a": BCICompetitionIV2aLoader,
     "synthetic_eeg": SyntheticEEGLoader,
 }
+try:
+    from .moabb_loader import MOABBDatasetLoader
+except ImportError:
+    MOABBDatasetLoader = None  # type: ignore
+if MOABBDatasetLoader is not None:
+    __all__.append("MOABBDatasetLoader")
 
 
 def get_dataset_loader(name: str) -> type[DatasetLoader]:

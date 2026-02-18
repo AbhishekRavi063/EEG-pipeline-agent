@@ -1,263 +1,324 @@
-# BCI AutoML Platform v1.0
+BCI AutoML Platform — Full Project Overview
 
-A modular, extensible **Motor Imagery BCI AutoML** platform in Python (research and product-grade). It loads a standard public EEG motor imagery dataset, implements multiple preprocessing / feature extraction / classification pipelines, automatically evaluates and prunes underperforming pipelines, selects the best pipeline for real-time simulation, and provides a desktop GUI with live EEG and performance plots. All pipelines (selected and rejected) get snapshot logs and graphs for research.
+A modular, research-grade Motor Imagery BCI framework in Python. It loads EEG data (BCI IV 2a or MOABB), runs a configurable pipeline (preprocessing, spatial filter, features, optional domain adaptation, classifier), uses an AutoML-style agent to select the best pipeline, and provides desktop and web GUIs plus multi-subject tables and statistical comparison (Pipeline A vs B with p-values). Designed for no data leakage, reproducibility, modularity (config-driven; pluggable datasets, features, classifiers), and research workflow (subject-level tables, p-values, publishable code).
 
-## Architecture
 
-```
-EEG → Preprocessing → Feature Extraction → Classifier → Metrics
-```
+1. What This Project Does
 
-The project is structured as a **reusable research and product framework** so new methods can be added by creating new Python files and registering them.
+  Load EEG data (BCI Competition IV 2a, MOABB datasets, or synthetic).
 
-### Directory Layout
+  Pipeline: Preprocessing, spatial filter (CAR, Laplacian, CSP, GEDAI), feature extraction (CSP, Riemannian, filter-bank, etc.), optional domain adaptation (zscore, CORAL, Riemann transport), classifier (LDA, SVM, MDM, EEGNet, etc.).
 
-```
-/bci_framework
-  /datasets       # Dataset loaders (BCI IV 2a; add more via DatasetLoader)
-/preprocessing  # Mandatory baseline pipeline + advanced registry (ICA, wavelet, ASR)
-  /features       # CSP, PSD, wavelet, Riemannian, deep placeholder
-  /classifiers    # LDA, SVM, Random Forest, EEGNet, Transformer placeholder
-  /pipelines      # Pipeline = prep chain + feature + classifier; PipelineRegistry
-  /agent          # Pipeline Selection Agent (explore, prune, exploit, adapt)
-  /gui            # Desktop GUI + Web UI (live EEG, accuracy, zoomable Plotly view)
-  /logging        # Snapshot logger (plots + JSON per pipeline)
-  /utils          # Config loader, registry helpers
-  config.yaml     # Pipelines, thresholds, paths (no code change needed)
-main.py           # Entry: load data → calibrate → prune → best → live sim → GUI → logs
-```
+  Agent: Calibration on training trials, pruning (accuracy/latency/stability), cross-validation, composite score, select best pipeline.
 
-Each module is **independent and pluggable**.
+  Modes: Offline (batch) and online (first N trials = calibration, rest = live stream).
 
-## Dataset
+  GUIs: Desktop (Matplotlib/Tk) and Web (Plotly, zoomable EEG; Pipeline A vs B comparison page with dropdowns and automatic statistical comparison).
 
-- **BCI Competition IV Dataset 2a only** (4-class motor imagery, 22 channels, 250 Hz). The app uses this dataset from `./data/BCI_IV_2a/`.
+  Research: LOSO, transfer learning, subject-level tables (Table_1, Table_2, …) with outcome measures per subject (AUC, balanced accuracy, etc.), paired statistical comparison (t-test, Wilcoxon, p-values) — implementing the professor's workflow (see below).
 
-**What does “each trial” mean? (Subject → Session → Run → Trial)**
+No data leakage (trial-wise or LOSO split); snapshot logging (plots, metrics.json, checkpoints); config-driven; extensible via plugins; memory-conscious (streaming, per-subject LOSO when building tables).
 
-- **Subject** — One person (e.g. A01). The dataset has 9 subjects.
-- **Session** — One recording file: **training (T)** or **evaluation (E)** (e.g. `A01T.gdf`, `A01E.gdf`). Each session has 6 **runs**.
-- **Run** — One continuous part of a session. Each run has **about 48 trials**.
-- **Trial** — **One 3-second segment** where the user was cued to imagine one movement (left hand, right hand, both feet, or tongue). So: **one trial = one cue + 3 seconds of EEG** for that mental task. The classifier predicts the class (1 of 4) from that 3 s of data.
 
-So “trials in a run” = the ~48 such segments in that run; “trials in a subject” = all segments from that subject (e.g. ~288 per session, ~576 if both T and E are loaded).
+2. Professor's Suggestions — Implemented
 
-- **Subjects:** **9** (A01–A09). Config: `dataset.subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9]`; use `--subject 1` for a single-subject run.
-- **Trials per subject:** Two GDF files per subject — **training (T)** e.g. `A01T.gdf` and **evaluation (E)** e.g. `A01E.gdf`. Each session has **about 288 trials** (6 runs × 48 trials). If both T and E are present, one subject yields **~576 trials**; if only one file is present, **~288 trials** (actual count depends on how many valid class triggers are in the file).
+The following research workflow was requested and is fully implemented:
 
-**Which sessions are used for subject 1?** — We use **both** sessions. The loader reads **A01T.gdf** (training) first, then **A01E.gdf** (evaluation). In the official BCI IV 2a dataset, **T has class markers**; **E has no markers**. The system handles this: **T** trials are loaded with labels (0–3); **E** is segmented into fixed-length (e.g. 3 s) **unlabeled trials** (label **-1**). Calibration and pipeline selection use **only labeled trials** (from T). During the stream, **all trials** (T + E) are run through the selected pipeline: for labeled trials we compute accuracy and drift; for unlabeled (E) we only show predictions (no ground truth).
-- Each trial is a **3-second** motor imagery segment (BCI IV 2a protocol). The EEG plots show **one trial at a time** (0–3 s on the x-axis); "full subject" means all trials of the subject are streamed, not one long recording. To use 4 seconds per trial, set `dataset.trial_duration_seconds: 4` in `bci_framework/config.yaml` (GDF must have enough data after each cue).
-- If the folder is empty, run `./scripts/download_bci_iv_2a.sh` to download the GDF files (~420 MB), or place GDF/MAT files manually (see below).
-- Supports **subject-wise** and **cross-subject** evaluation.
-- New datasets can be added by implementing the `DatasetLoader` interface in `datasets/base.py`.
+  Loop through subjects and get an overall table with each subject in a row and outcome measures in columns (e.g. AUC, balanced accuracy, test accuracy, kappa, F1, ITR). That is Table_1 (one table per pipeline configuration).
 
-### BCI IV 2a Setup
+  Run exactly the same pipeline but with one setting changed (e.g. different classifier, or replace ICA with GEDAI). That generates Table_2. Every Table_X contains the same subjects (same rows), so you have distributions across the same subjects for each pipeline.
 
-1. Download from [BNCI Horizon](https://bnci-horizon-2020.eu/database/data-sets) or [BCI Competition IV](https://www.bbci.de/competition/iv/).
-2. Place GDF files (e.g. `A01T.gdf`, `A01E.gdf`, … `A09T.gdf`, `A09E.gdf`) in `./data/BCI_IV_2a/` (or path set in `config.yaml`).
+  Compare those distributions with statistics — get p-values to see whether the Table_1 pipeline is significantly different from the Table_2 pipeline (paired t-test or Wilcoxon).
 
-## Installation
+  Workflow: First explore the results to see which comparisons are interesting and statistically significant; then choose a few for the paper; you can publish the code with the paper.
 
-```bash
-cd "EEG Agent"
-python -m venv venv
-source venv/bin/activate   # or venv\Scripts\activate on Windows
-pip install -r requirements.txt
-```
+Web-based pipeline comparison (implemented):
 
-## Usage
+  Two parallel pipelines A and B in the same UI, with the same choice of parameters in dropdown menus (feature, classifier, spatial filter).
 
-From the **project root** (`EEG Agent`). Use `python3` if `python` is not found (e.g. on macOS):
+  You keep or change one (or a few) settings between A and B (e.g. Pipeline A = LDA, Pipeline B = SVM).
 
-```bash
-# Activate venv first (optional): source venv/bin/activate
+  The system automatically runs the statistical comparison between those two pipelines on the same subjects and shows Table_A, Table_B, and the comparison (mean A, mean B, delta, p-value, significant Yes/No at α=0.05).
 
-# Default: calibration, pruning, best pipeline, live simulation, GUI
-PYTHONPATH=. python main.py
-# Or: PYTHONPATH=. python3 main.py
+Where it lives:
 
-# Single subject (e.g. subject 1)
-PYTHONPATH=. python main.py --subject 1
+  Tables: bci_framework/utils/subject_table.py — build_subject_table, TABLE_METRIC_COLUMNS (accuracy, balanced_accuracy, roc_auc_macro, kappa, f1_macro, itr_bits_per_minute, n_trials_test). Scripts and web backend use this to build Table_1, Table_2.
 
-# Custom config
-PYTHONPATH=. python main.py --config path/to/config.yaml
+  Comparison: bci_framework/utils/table_comparison.py — compare_tables, compare_tables_multi_metric (paired t-test, Wilcoxon).
 
-# No GUI (only calibration + logs)
-PYTHONPATH=. python main.py --no-gui
+  Runner: bci_framework/evaluation/multi_subject_runner.py — run_table_for_config (LOSO per subject), run_ab_comparison (Table_A + Table_B + comparison).
 
-# No GUI (calibration + logs only)
-PYTHONPATH=. python main.py --no-gui
+  Web UI: bci_framework/gui/static/compare.html — dropdowns for Pipeline A and B, "Copy A to B", Run comparison, POST /api/compare_pipelines, displays two tables and comparison table.
 
-# Online mode: first N trials calibration, rest = live stream (full subject; with drift monitoring)
-PYTHONPATH=. python main.py --online
-# Uses all loaded trials: first few for pipeline selection, then streams the rest with the selected pipeline.
-# For one full subject (~576 trials), ensure both A0XT.gdf and A0XE.gdf are present so the loader returns all trials.
-# Online without GUI
-PYTHONPATH=. python main.py --online --no-gui
+  Scripts: scripts/run_multi_subject_tables.py (Table_1, optional Table_2 + comparison); scripts/explore_pipeline_comparisons.py (batch configs, pairwise comparison).
 
-# Web interface: zoomable EEG view in browser (instead of desktop GUI)
-PYTHONPATH=. python main.py --web
-# Web + online mode (default: subject 1 / A01)
-PYTHONPATH=. python main.py --web --online
-# Use a different subject: add --subject N (e.g. --subject 3 for A03)
-# The browser should open automatically to http://127.0.0.1:8765. If it doesn't, open that URL manually (use 127.0.0.1, not localhost).
-# If you see "connection refused" or "address already in use": run `./scripts/kill_web_server.sh` to free port 8765, then run again. The app will also try 8766, 8767, … if 8765 is in use.
-```
 
-Programmatic examples are available in `examples/run_offline.py` and `examples/run_online.py`.
+3. Architecture (End-to-End)
 
-### Full flow (how pipeline selection and live stream work)
+main.py:
+  Load config, Seed, Load dataset, Split (train/test or LOSO)
+  Build pipelines (registry from config)
+  Agent: calibration (optional quick screening, then CV), prune, select best
+  Snapshot logs (per pipeline)
+  Stream test set through best pipeline (trial-by-trial or sliding)
+  GUI (desktop or web)
 
-The **same dataset** is split once; the **training part** is used to choose the pipeline (offline), and the **test part** is what you see as the "live stream" (simulated trial-by-trial with the selected pipeline).
+Pipeline (per trial):
 
-1. **Load data** — BCI IV 2a from `./data/BCI_IV_2a/` (downloads if missing).
-2. **Split (before any stream)** — Trial-wise 80% train / 20% test. Train and test are fixed; no data is streamed yet.
-3. **Pipeline selection (offline, once)** — All pipelines are **fitted and evaluated on training trials only** (batch, not stream). Best pipeline is chosen by accuracy, kappa, latency, stability. This happens **before** any live stream.
-4. **Snapshots** — Plots and checkpoints saved per pipeline under `results/<experiment_id>/`.
-5. **Live stream + GUI** — **Only the test set** is streamed, trial by trial, through the **selected best pipeline**. The GUI shows raw EEG, processed EEG, and predictions. Trials are paced at `trial_duration_sec` (e.g. 3 s) per trial.
+  Raw EEG (n_trials, n_channels, n_samples)
+  Signal quality (optional)
+  Notch (50/60 Hz) + Bandpass (e.g. 8–30 Hz motor)
+  Spatial filter (CAR, Laplacian, CSP, GEDAI)
+  Optional advanced (ICA, wavelet, GEDAI)
+  Feature extraction (CSP, Riemannian, Covariance, Filter-bank Riemann, etc.)
+  Domain adaptation (none, zscore, coral, riemann_transport) — optional
+  Classifier (LDA, SVM, MDM, EEGNet, Logistic Regression, RSA-MLP, etc.)
+  Prediction + metrics
 
-So: **pipeline selection does not happen during the stream.** It happens once at the start on the training split; then the stream is only the test split run through that single selected pipeline.
+Modularity: Datasets, features, classifiers, spatial filters, and preprocessing plugins implement base interfaces and are registered; pipelines are built from config (explicit list or auto combinations). No core code change needed to add a new dataset, feature, or classifier — implement the interface and register.
 
-So: **how much data/time for selecting the pipeline?** — Up to **50 training trials** (or all train trials if fewer); time = time to fit and evaluate all pipelines on that data (typically tens of seconds to a couple of minutes). After that, the GUI opens and live streams the test set with the selected pipeline.
+Memory: Streaming uses buffers (configurable window); LOSO table runs process one holdout subject at a time (train on others, test on holdout) and append one row per subject; full raw data is loaded once per run for the requested subjects, then released after tables are built.
 
-**Split options (not only 80/20):**
 
-| Config / CLI | Effect |
-|--------------|--------|
-| **Default** | Trial-wise **80% train, 20% test** within the same subject (`split_mode: train_test`, `train_test_split: 0.8`). |
-| **Sequential (stream-first)** | First N trials = calibration (pipeline selection), **rest = live stream** with selected pipeline. Set `split_mode: "sequential"` and `stream_calibration_trials: 20` in `config.yaml`. Like real BCI: initial segment (1,2,3,…,N) for selection; trials N+1, N+2, … streamed in real time with the best pipeline. No shuffle. |
-| **Change ratio** | In `config.yaml`: `train_test_split: 0.9` → 90% train, 10% test (only when `split_mode: train_test`). |
-| **LOSO** | Leave-one-subject-out: train on all subjects except one, test on that subject. Set `evaluation_mode: "loso"` or `"cross_subject"`, or run `python main.py --loso 3` to hold out subject 3. |
-| **Single subject** | `python main.py --subject 1` uses only subject 1; split is still trial-wise or sequential within that subject. |
+4. Directory Layout
 
-**Is 80/20 enough?** — For single-subject BCI it’s a common choice: enough test trials to get a stable accuracy estimate and run a short live stream, while using most data for calibration. If you have very few trials (e.g. &lt;30), consider a higher train ratio (e.g. `train_test_split: 0.9`) so calibration sees more data; if you care about generalisation across subjects, use LOSO.
+EEG Agent/
+  main.py — Entry: load, calibrate, best, stream, GUI
+  requirements.txt
+  README.md — This file
+  bci_framework/
+    config.yaml — Master config (dataset, preprocessing, pipelines, agent, gui, logging)
+    datasets/ — base, bci_iv_2a, moabb_loader, synthetic_eeg
+    preprocessing/ — manager, notch, bandpass, spatial_filters/, gedai, ica, wavelet
+    features/ — csp, riemannian, covariance, filter_bank_riemann, etc.
+    domain_adaptation/ — zscore, coral, riemann_transport
+    classifiers/ — lda, svm, mdm, eegnet, logistic_regression, rsa_mlp, etc.
+    pipelines/ — pipeline.py, registry.py
+    agent/ — pipeline_agent.py (calibration, pruning, quick_screening, early_cv_stop), drift_detector
+    streaming/ — offline_stream, realtime_stream, buffer
+    logging/ — snapshot.py (plots, metrics.json, checkpoints, adaptive_pruning)
+    gui/ — app.py (desktop), web_server.py, static/index.html, compare.html
+    evaluation/ — multi_subject_runner (LOSO, run_ab_comparison)
+    utils/ — config_loader, splits, metrics, subject_table, table_comparison
+  scripts/ — run_multi_subject_tables, explore_pipeline_comparisons, benchmark_v1_v2_moabb, run_web_interface, download_bci_iv_2a.sh
+  tests/
+  examples/ — run_offline.py, run_online.py, notebooks
+  results/ — experiment_id/pipeline_name/ (plots, metrics.json)
+  data/BCI_IV_2a/ — A01T.gdf, A01E.gdf, etc. (or MOABB cache)
 
-**Sequential (stream-first) strategy — is it efficient?** — Yes, for deployment-like flow: use the **first few trials** (e.g. 1–20) for pipeline selection, then **stream the rest** (21, 22, …) with the selected pipeline only. Set `split_mode: "sequential"` and `stream_calibration_trials: 20` in `config.yaml`. Tradeoff: fewer calibration trials can make pipeline choice noisier; more calibration gives a stabler choice but less "live" stream. For real-time feel, sequential is efficient.
 
-Or run as a package (from the directory that contains `bci_framework`):
+5. Dataset (BCI IV 2a and MOABB)
 
-```bash
-python -m bci_framework.main
-```
+  BCI IV 2a: 4 classes (left hand, right hand, both feet, tongue). 22 EEG channels, 250 Hz, 9 subjects (A01–A09). One trial = one cued 3 s segment. Training (T) and evaluation (E) sessions.
 
-## Configuration
+  Setup: Place GDF files in ./data/BCI_IV_2a/ or run ./scripts/download_bci_iv_2a.sh. Channel names: when the file has generic names (EEG1, EEG2, …), the loader uses standard 10–20 names (Fz, FC3, Cz, …) for the UI.
 
-Edit `bci_framework/config.yaml` to:
+  MOABB: e.g. BNCI2014_001, PhysionetMI — used for LOSO and multi-subject tables via moabb_loader.py.
 
-- Set **dataset path**, subjects, train/test split.
-- Configure **preprocessing**: mandatory notch/bandpass/reference settings and optional advanced modules (ICA, wavelet, ASR).
-- Tune **feature** and **classifier** options (CSP, PSD, LDA, SVM, etc.).
-- Control **pipelines**: `auto_generate` combinations or list `explicit` pipelines.
-- Set **agent** thresholds: `min_accuracy`, `max_latency_ms`, `max_stability_variance`, `top_n_pipelines`, `re_evaluate_interval_trials`.
-- Set **GUI** refresh rate and **logging** paths.
+  Config: dataset.name, data_dir, subjects, trial_duration_seconds, train_test_split, split_mode, evaluation_mode, use_cross_session_split.
 
-No code changes are required for these options.
 
-## Pipeline Design
+6. Installation and Quick Run
 
-Each pipeline is:
+  cd "EEG Agent"
+  python -m venv venv
+  source venv/bin/activate   (Windows: venv\Scripts\activate)
+  pip install -r requirements.txt
 
-**Mandatory preprocessing** → **Optional advanced plugins** → **Feature extraction** → **Classifier**
+  Default: calibration + live stream + desktop GUI
+  PYTHONPATH=. python main.py --subject 1
 
-- **Mandatory preprocessing:** Notch (50/60 Hz), bandpass (0.5–40 Hz or 8–30 Hz for motor imagery), and re-referencing (CAR or Laplacian) applied by `MandatoryPreprocessingPipeline`.
-- **Signal quality monitoring:** Variance/kurtosis z-score checks plus optional channel interpolation via `signal_quality`.
-- **Advanced preprocessing (optional):** ICA, Wavelet denoising, ASR/rASR, and future artefact modules configured in `advanced_preprocessing.enabled`.
-- **Features:** CSP, PSD, Wavelet, Riemannian covariance, Deep placeholder (and raw passthrough for EEGNet).
-- **Classifiers:** LDA, SVM, Random Forest, EEGNet (PyTorch), Transformer placeholder.
+  Web UI (browser)
+  PYTHONPATH=. python main.py --subject 1 --web
+  Home: http://127.0.0.1:8765   Compare: http://127.0.0.1:8765/compare
 
-Unified classifier API: `fit(X, y)`, `predict(X)`, `predict_proba(X)`.
+  Web without GEDAI (no leadfield)
+  ./venv/bin/python scripts/run_web_interface.py
 
-See `docs/preprocessing_architecture.md` for a deep dive into the mandatory vs optional preprocessing flow and online/offline constraints.
+  No GUI
+  PYTHONPATH=. python main.py --no-gui --subject 1
 
-## Pipeline Selection Agent
+  Online: first N trials = calibration, rest = live stream
+  PYTHONPATH=. python main.py --web --online --subject 1
 
-1. **Exploration:** Run all pipelines on a short calibration period.
-2. **Pruning:** Remove pipelines with accuracy &lt; threshold, high latency, or unstable predictions.
-3. **Exploitation:** Keep top N pipelines; select the best for deployment.
-4. **Continuous adaptation:** Re-evaluate periodically (configurable).
 
-Metrics: **Accuracy**, **Cohen’s Kappa**, **Latency**, **Stability** (1 − variance of accuracy over time), **Confidence**.
+7. Web UI — User Guide
 
-**How is the best pipeline chosen when several have 1.0 accuracy?** — The selector uses a **composite score**: `0.4×accuracy + 0.3×kappa + 0.2×stability − 0.1×(latency_sec)`. When multiple pipelines tie (e.g. all 1.0 accuracy), the one with **lowest latency** is selected (tie-break by speed).
+How to run the web UI
 
-## Real-time streaming (after best pipeline selected)
+  With GEDAI disabled (no leadfield; recommended for quick runs):
+  ./venv/bin/python scripts/run_web_interface.py
 
-After the best pipeline is chosen, the **full test set** is streamed through it like a real BCI session:
+  With default config (needs leadfield if GEDAI enabled):
+  ./venv/bin/python main.py --subject 1 --web
 
-- **Full dataset:** All test trials are processed (config: `streaming.stream_full_test_set: true`).
-- **Real-time timing:** A delay of `trial_duration_sec` (e.g. 3 s) is applied between trials so total runtime matches real-time (e.g. 24 trials × 3 s ≈ 72 s).
-- **GUI:** Window title shows progress (e.g. "Trial 5/24 - left_hand") and live raw/filtered EEG, accuracy, and pipeline comparison.
+After calibration (about 15–20 s with GEDAI disabled), open http://127.0.0.1:8765 (Home) and http://127.0.0.1:8765/compare (Pipeline A vs B). Keep the terminal running.
 
-To disable real-time pacing (run as fast as possible), set `streaming.real_time_timing: false` in `config.yaml`. To stream only the first N trials, set `stream_full_test_set: false` (and the code uses the first 50 trials).
+Home page (Live EEG)
 
-## GUI
+Purpose: Single-subject stream — one pipeline, trial by trial.
 
-- **Live plots:** Raw EEG channels, filtered EEG, feature visualization (e.g. CSP), pipeline accuracy over time, pipeline comparison bar chart.
-- **Live prediction:** Selected pipeline runs on streamed chunks; GUI shows class (e.g. left hand, right hand).
+  Status bar: Subject, dataset, pipeline name, trial (e.g. 3/10), prediction, trial source (T/E), rolling accuracy.
 
-Uses **Matplotlib** (TkAgg). No web dashboard.
+  Raw EEG: One trial, unprocessed; channel names from dataset (e.g. Fz, Cz when using BCI IV 2a). May show line noise, drift.
 
-## Snapshot Logging
+  Processed EEG: Same trial after pipeline (notch, bandpass, CAR/Laplacian, optional ICA/wavelet). Smoother trace = actual processing, not display smoothing.
 
-For **every** pipeline (selected and rejected):
+  Active frequency bands (raw / processed): Power in delta, theta, alpha, beta, gamma and noise bands (drift, line_50/60, emg).
 
-- Folder: `results/<pipeline_name>/`
-- Contents: Raw EEG plot, filtered EEG plot, feature visualization, accuracy curve, confusion matrix, `metrics.json` (metrics and timestamps).
+  Accuracy over time: Accuracy as trials progress (one point per trial).
 
-Mandatory for research and reproducibility.
+  Pipeline comparison: Bar chart of calibration CV accuracy; best pipeline highlighted. Table: Accuracy, Kappa, Latency (ms), Stability, Composite score. Formula: 0.4×accuracy + 0.3×kappa + 0.2×stability − 0.1×(latency in s).
 
-## Adding New Methods
+Subjects: Home uses one subject (e.g. --subject 1). Data from dataset files on disk (not a DB). Transfer learning: controlled in config; used in backend when enabled; not shown in the web UI (only in logs and metrics.json).
 
-1. **New preprocessing plugin:** Add a class in `preprocessing/` inheriting `AdvancedPreprocessingBase`, implement `fit` / `transform`, and register it in `ADVANCED_PREPROCESSING_REGISTRY` (see `preprocessing/manager.py`).
-2. **New feature extractor:** Add a class in `features/` inheriting `FeatureExtractorBase`, register in `features/__init__.py`.
-3. **New classifier:** Add a class in `classifiers/` inheriting `ClassifierBase` with `fit`, `predict`, `predict_proba`, register in `classifiers/__init__.py`.
-4. **New dataset:** Implement `DatasetLoader` in `datasets/`, implement `load()` and `get_subject_ids()`, register in `datasets/__init__.py`.
+Compare page (Pipeline A vs B)
 
-New pipelines are then picked up automatically by `PipelineRegistry` when `auto_generate` is true, or add them to `explicit` in `config.yaml`.
+Purpose: Two pipelines on the same subjects, Table_A, Table_B, and statistical comparison (p-values).
 
-## Performance (M4 Pro, 16 GB)
+  1. Set Dataset (e.g. BNCI2014_001) and Subjects (e.g. 1 2 3).
+  2. Configure Pipeline A and Pipeline B via Simple dropdowns (Feature, Classifier, Spatial) or Advanced (config paths, Override for B JSON).
+  3. Click Run comparison — backend runs LOSO for A and B on the same subjects, builds Table_A and Table_B, runs paired t-test or Wilcoxon.
+  4. Page shows Table A, Table B, and Comparison table: per metric — Mean A, Mean B, Delta, p-value, Significant (α=0.05).
 
-- Pipeline count is capped (e.g. `max_combinations: 20` in config) to avoid running too many heavy pipelines.
-- Preprocessing is shared across pipelines where possible (same chain reused).
-- Multiprocessing can be added where safe (e.g. per-pipeline evaluation) if needed.
+Tip: "Copy A to B", then change one dropdown for B (e.g. Classifier B = SVM) to compare "same pipeline, different classifier."
 
-## Future Placeholders
+Dropdown options (Compare page)
 
-- **Reinforcement learning** pipeline selector (config: `reinforcement_learning_selector`).
-- **Real EEG hardware** (OpenBCI, Emotiv) input (config: `real_eeg_hardware`).
-- **MCP integration** for LLM control (config: `mcp_llm_integration`).
-- **Cloud training** (config: `cloud_training`).
+  Feature: filter_bank_riemann, csp, riemannian, covariance, riemann_tangent_oas.
 
-## Research Notes
+  Classifier: logistic_regression, lda, svm, random_forest, rsa_mlp, mdm.
 
-- BCI IV 2a: 4 classes (left hand, right hand, both feet, tongue), 22 EEG channels, 250 Hz, 9 subjects.
-- CSP is most effective with motor band (8–30 Hz) or broad bandpass (1–40 Hz).
-- For production, consider subject-specific calibration and continuous adaptation (drift re-evaluation).
-- Snapshot logs under `results/` allow offline comparison of all pipelines and hyperparameters.
+  Spatial: laplacian_auto, car.
 
-## Product-Grade Additions (v1.0)
+  Test: Paired t-test (parametric) or Wilcoxon signed-rank (non-parametric).
 
-- **No data leakage:** Trial-wise split and LOSO; no preprocessing/CSP fitting on test data.
-- **Streaming:** `EEGStreamBuffer`, sliding window (configurable overlap), `dataset.stream_chunk()`.
-- **Advanced metrics:** ITR, F1, ROC-AUC, mutual information; logged per pipeline.
-- **Model persistence:** Save/load best and all pipelines (`.pkl` / `.pt`); versioned experiments.
-- **Drift detection:** Rolling-window accuracy and recalibration triggers; baseline from calibration.
-- **Experiment tracking:** Seed control, experiment ID, optional MLflow.
-- **Latency budget:** Prune pipelines above 100–300 ms (configurable).
-- **Human-in-the-loop placeholder:** Feedback API for correction labels.
-- **Tests & CI:** Unit tests for splits, streaming, metrics, pipeline; GitHub Actions template.
+Advanced (Compare page)
 
-See `docs/PRODUCT_SPEC_V1.md` for the full product spec and addressed gaps.
+Leave empty to use Simple dropdowns.
 
-**Minor additions (streaming/GUI sync, latency logging, leaderboard, explainability, example notebook):**
+  Pipeline A/B config path: Use a full config file instead of dropdowns.
 
-- **Pub-sub:** `utils/pubsub.py` — thread-safe publish/subscribe for streaming and GUI (no blocking).
-- **Latency logger:** `utils/latency_logger.py` — per-pipeline ms per window, budget checks.
-- **Default HP ranges:** `config.yaml` → `agent.hyperparameter_optimization.param_ranges` (CSP, bandpass, LDA, SVM).
-- **Leaderboard:** `gui/leaderboard.py` — sortable table of top-N pipelines with metrics and pruning flags.
-- **Explainability stub:** `gui/explainability.py` — `plot_csp_patterns()`, `shap_importance_stub()`.
-- **Example notebook:** `examples/bci_automl_minimal_example.ipynb` — load data, calibration, leaderboard, snapshots.
+  Override for B (JSON): "B = A + this JSON." Example: {"pipelines":{"explicit":[["filter_bank_riemann","svm"]]}} — B = same as A but classifier SVM.
 
-## License
+Quick reference (Web UI)
 
-Use and extend for research and product development as needed.
+  Purpose — Home: One subject, one pipeline, trial-by-trial. Compare: Two pipelines (A vs B) on same subjects; tables + p-values.
+
+  Subjects — Home: One. Compare: Multiple (e.g. 1 2 3).
+
+  Shows — Home: Raw/processed EEG, band power, accuracy, pipeline bar. Compare: Table A, Table B, comparison (Mean A/B, delta, p-value, significant?).
+
+  URL — Home: http://127.0.0.1:8765. Compare: http://127.0.0.1:8765/compare.
+
+
+8. Pipeline A vs B — Flow (Compare)
+
+  Backend loads data once for all listed subjects.
+
+  For each subject, LOSO: train on other subjects, test on this subject — one row (subject_id, accuracy, balanced_accuracy, roc_auc_macro, kappa, f1_macro, itr_bits_per_minute, n_trials_test) for Pipeline A — Table A.
+
+  Same for Pipeline B — Table B (same subject IDs).
+
+  Comparison: For each metric, align by subject_id, run paired t-test or Wilcoxon — p-value, mean A, mean B, delta, significant (Yes/No at α=0.05). Displayed in the same page.
+
+
+9. Configuration (config.yaml)
+
+  dataset — name, data_dir, subjects, trial_duration_seconds, train_test_split, split_mode, evaluation_mode, use_cross_session_split
+
+  spatial_filter — enabled, method (car, laplacian_auto, csp, gedai), auto_select, methods_for_automl
+
+  preprocessing — notch_freq, bandpass_low/high, adaptive_motor_band, reference
+
+  advanced_preprocessing — enabled: [signal_quality, gedai, ica, wavelet], gedai.leadfield_path
+
+  pipelines — auto_generate, max_combinations, explicit: [[feature, clf], ...]
+
+  transfer — enabled, method (none, zscore, coral, riemann_transport), target_unlabeled_fraction
+
+  agent — calibration_trials, cv_folds, prune_thresholds (min_accuracy, max_latency_ms), quick_screening, early_cv_stop, progressive_halving
+
+  streaming — mode, trial_duration_sec, real_time_timing, stream_full_test_set
+
+  gui — refresh_rate_ms, eeg_channels_display, window_seconds, web_port
+
+
+10. Main Flow (main.py)
+
+  1. Load config and dataset.
+  2. Split (trial-wise 80/20, or sequential, or LOSO).
+  3. Build pipelines from config (registry).
+  4. Agent: calibration (optional quick screening, then full CV), prune, select best by composite score.
+  5. Snapshot: save plots, metrics.json, optional checkpoints per pipeline (including adaptive_pruning stats when used).
+  6. Stream test set through best pipeline; optional real-time pacing.
+  7. GUI: desktop or web (WebSocket pushes state: raw_buffer, filtered_buffer, channel_names, pipeline_metrics, accuracy_history, etc.).
+
+
+11. Domain Adaptation (Transfer Learning)
+
+When transfer.enabled is true (e.g. LOSO): adapter fits on source features + unlabeled target calibration; test target never used for fitting. Methods: none, zscore, coral, riemann_transport. Pipeline: features, adapter, classifier; predict always goes through adapter. If transfer is on, X_target (unlabeled) is required at fit time; clear errors if missing.
+
+
+12. Agent (Pruning and Selection)
+
+  Quick screening (optional): Evaluate pipelines on a stratified subset; keep top-K for full CV; no transfer on clones; StratifiedShuffleSplit; optional trial-level split to avoid leakage.
+
+  Early CV stop: Stop a pipeline's CV if it cannot beat the best score so far.
+
+  Progressive halving (optional): Reduce pipelines on a fraction of data before full CV.
+
+  Prune: By min_accuracy, max_latency_ms, stability variance; exclude list (e.g. GEDAI) can skip screening and go to full CV.
+
+  Select best: Composite score; tie-break by latency or prefer linear models. Ranking correlation (screening vs full CV) and runtime stats (pipelines_before/after, cv_fits, runtime_seconds) logged; perfect-accuracy check (shuffled labels) for leakage warning.
+
+
+13. Scripts (Summary)
+
+  run_multi_subject_tables.py — Build Table_1 (and Table_2) over subjects (LOSO); optional comparison report (Table_1 vs Table_2, p-values).
+
+  explore_pipeline_comparisons.py — Multiple configs, tables, pairwise comparison.
+
+  benchmark_v1_v2_moabb.py — v1/v2/v3 on MOABB; optional --loso, --transfer-method.
+
+  run_web_interface.py — Start web UI with GEDAI disabled (no leadfield).
+
+  download_bci_iv_2a.sh — Download BCI IV 2a GDF files.
+
+
+14. Adding New Methods (Modularity)
+
+  Dataset: Implement DatasetLoader in datasets/, register in datasets/__init__.py.
+
+  Feature / classifier: Implement base interface in features/ or classifiers/, register in __init__.py.
+
+  Preprocessing: Add class in preprocessing/, register in manager. New pipelines are picked up when auto_generate is true or via explicit in config.
+
+
+15. Snapshot Logging
+
+Per pipeline under results/experiment_id/pipeline_name/: raw EEG plot, filtered EEG plot, metrics.json (accuracy, kappa, latency, transfer info, spatial_filter_used, etc.). When adaptive pruning is used: adaptive_pruning block (quick_screening, runtime_stats, early_stopped_pipelines, correlation_with_full_cv). Optional model checkpoints (.pkl).
+
+
+16. Cross-Check: Features from UI to Backend
+
+  Subject-level tables (Table_1, Table_2): Compare page shows Table A, Table B (subjects × metrics). Backend: run_table_for_config, LOSO per subject, build_subject_table; one row per subject; metrics = accuracy, balanced_accuracy, roc_auc_macro, kappa, f1_macro, itr_bits_per_minute, n_trials_test.
+
+  Statistical comparison (p-values): Compare page: Mean A, Mean B, Delta, p-value, Significant. Backend: compare_tables_multi_metric (paired t-test, Wilcoxon); same subjects in both tables.
+
+  Web A vs B with same params, change one: Dropdowns Pipeline A and B; "Copy A to B"; change one (e.g. classifier). Backend: run_ab_comparison with pipeline_a / pipeline_b dicts (feature, classifier, spatial) or config paths / override_b.
+
+  Channel names (montage): Raw/processed EEG legend: Fz, Cz, … (not EEG1, EEG2). Backend: BCI IV 2a loader uses standard 10–20 list when file has generic names; channel_names passed to WebApp and sent via WebSocket.
+
+  Transfer learning: Not shown in UI. Backend: Config; pipeline requires X_target when transfer on; predict always via adapter; logged in metrics.json.
+
+  Adaptive pruning: Not in UI. Backend: Agent quick_screening, early_cv_stop, progressive_halving; runtime and correlation in metrics.json (adaptive_pruning).
+
+  Modularity: Config-driven dropdowns (feature, classifier, spatial). Backend: Registries for datasets, features, classifiers; pipelines from config; no core change for new methods.
+
+  Memory: Compare runs LOSO per subject; tables built incrementally. Backend: Data loaded once for requested subjects; per-holdout fold runs; tables = list of dicts (one row per subject).
+
+
+17. License
+
+Use and extend for research and product development as needed. Publish code with the paper as suggested in the professor's workflow.

@@ -1,12 +1,14 @@
 """BCI Competition IV Dataset 2a loader (4-class motor imagery, 22 channels, 250 Hz)."""
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from .base import EEGDataset, DatasetLoader
+from bci_framework.utils.capability_checker import detect_spatial_capabilities
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +17,14 @@ CLASS_TRIGGERS = [769, 770, 771, 772]  # left hand, right hand, both feet, tongu
 CLASS_NAMES = ["left_hand", "right_hand", "feet", "tongue"]
 N_EEG_CHANNELS = 22
 FS = 250.0
+
+# Standard 10-20 channel names for BCI IV 2a (22 EEG channels). Used when GDF/mat has generic names (EEG1, EEG2, ...).
+BCI_IV_2a_CHANNEL_NAMES = [
+    "Fz", "FC3", "FC1", "FCz", "FC2", "FC4",
+    "C5", "C3", "C1", "Cz", "C2", "C4", "C6",
+    "CP3", "CP1", "CPz", "CP2", "CP4",
+    "P1", "Pz", "P2", "POz",
+][:N_EEG_CHANNELS]
 
 
 class BCICompetitionIV2aLoader(DatasetLoader):
@@ -51,7 +61,8 @@ class BCICompetitionIV2aLoader(DatasetLoader):
             ds = self._load_subject(data_path, sid, trial_duration_seconds=trial_sec)
             if ds is not None:
                 result[sid] = ds
-
+        if not getattr(self, "capabilities", None):
+            self.capabilities = detect_spatial_capabilities(raw=None)
         if len(result) == 1:
             return next(iter(result.values()))
         return result  # type: ignore
@@ -158,8 +169,15 @@ class BCICompetitionIV2aLoader(DatasetLoader):
             return None
         X = np.stack(all_data)
         y = np.array(all_labels, dtype=np.int64)
-        ch_names = raw.ch_names[:N_EEG_CHANNELS] if hasattr(raw, "ch_names") else [f"EEG{i+1}" for i in range(N_EEG_CHANNELS)]
-        # First session = T; rest = E. Used for T/E indicator in UI.
+        ch_names = raw.ch_names[:N_EEG_CHANNELS] if hasattr(raw, "ch_names") else []
+        if len(ch_names) < N_EEG_CHANNELS:
+            ch_names = ch_names + [f"EEG{i+1}" for i in range(len(ch_names), N_EEG_CHANNELS)]
+        # If names look generic (EEG1, EEG 1, etc.), use standard 10-20 montage names
+        if ch_names and all(re.match(r"^EEG\s*\d+$", str(c).strip(), re.IGNORECASE) for c in ch_names[:N_EEG_CHANNELS]):
+            ch_names = list(BCI_IV_2a_CHANNEL_NAMES)
+            logger.debug("Using standard 10-20 channel names for BCI IV 2a (replacing generic EEG1..EEG22)")
+        # v3.1: detect spatial capabilities once from MNE Raw
+        self.capabilities = getattr(self, "capabilities", None) or detect_spatial_capabilities(raw)
         n_trials_from_t = loaded_sessions[0][1] if loaded_sessions else None
         return EEGDataset(
             data=X,
@@ -169,6 +187,7 @@ class BCICompetitionIV2aLoader(DatasetLoader):
             class_names=CLASS_NAMES,
             subject_id=subject_id,
             n_trials_from_t=n_trials_from_t,
+            capabilities=self.capabilities,
         )
 
     def _load_mat_subject(self, data_path: Path, subject_id: int) -> EEGDataset | None:
@@ -236,7 +255,8 @@ class BCICompetitionIV2aLoader(DatasetLoader):
         X = np.stack(all_data)
         y = np.array(all_labels, dtype=np.int64)
         y = np.clip(y, 0, 3)
-        ch_names = [f"EEG{i+1}" for i in range(X.shape[1])]
+        n_ch = X.shape[1]
+        ch_names = list(BCI_IV_2a_CHANNEL_NAMES) if n_ch == N_EEG_CHANNELS else [f"EEG{i+1}" for i in range(n_ch)]
         return EEGDataset(
             data=X,
             labels=y,

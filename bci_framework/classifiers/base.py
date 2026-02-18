@@ -16,8 +16,13 @@ class ClassifierBase(ABC):
         self.params = kwargs
 
     @abstractmethod
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "ClassifierBase":
-        """Fit on features (n_samples, n_features) and labels (n_samples,)."""
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+    ) -> "ClassifierBase":
+        """Fit on features (n_samples, n_features) and labels (n_samples,). Optional sample_weight (n_samples,)."""
         return self
 
     @abstractmethod

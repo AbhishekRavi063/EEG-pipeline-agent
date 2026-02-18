@@ -24,7 +24,12 @@ class SVMClassifier(ClassifierBase):
         self.gamma = gamma
         self._clf = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "SVMClassifier":
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+    ) -> "SVMClassifier":
         from sklearn.svm import SVC
         self._clf = SVC(
             C=self.C,
@@ -33,7 +38,10 @@ class SVMClassifier(ClassifierBase):
             probability=True,
             random_state=42,
         )
-        self._clf.fit(X, y)
+        if sample_weight is not None:
+            self._clf.fit(X, y, sample_weight=sample_weight)
+        else:
+            self._clf.fit(X, y)
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:

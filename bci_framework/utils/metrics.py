@@ -27,6 +27,15 @@ def f1_macro(y_true: np.ndarray, y_pred: np.ndarray, n_classes: int) -> float:
         return 0.0
 
 
+def balanced_accuracy(y_true: np.ndarray, y_pred: np.ndarray, n_classes: int) -> float:
+    """Per-class recall averaged (macro); robust to class imbalance."""
+    try:
+        from sklearn.metrics import balanced_accuracy_score
+        return float(balanced_accuracy_score(y_true, y_pred, adjusted=False))
+    except Exception:
+        return 0.0
+
+
 def roc_auc_ovr(y_true: np.ndarray, y_proba: np.ndarray, n_classes: int) -> float:
     try:
         from sklearn.metrics import roc_auc_score
@@ -86,6 +95,7 @@ def compute_all_metrics(
     acc = accuracy(y_true, y_pred)
     out = {
         "accuracy": acc,
+        "balanced_accuracy": balanced_accuracy(y_true, y_pred, n_classes),
         "kappa": cohen_kappa(y_true, y_pred, n_classes),
         "f1_macro": f1_macro(y_true, y_pred, n_classes),
         "itr_bits_per_trial": itr_bits_per_trial(acc, n_classes, trial_duration_sec),

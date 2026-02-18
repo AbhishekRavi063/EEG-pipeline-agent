@@ -18,6 +18,11 @@ venv/
 data/
 results/
 logs/
+*.pkl
+dist/
+build/
+*.egg
+.cache/
 
 *.png
 *.jpg

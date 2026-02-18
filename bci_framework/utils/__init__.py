@@ -7,6 +7,14 @@ from .streaming import EEGStreamBuffer, sliding_window_chunks, stream_chunk
 from .experiment import set_seed, get_experiment_id, set_experiment_id, log_experiment_params, enable_mlflow
 from .pubsub import PubSub, TOPIC_RAW_EEG, TOPIC_FILTERED_EEG, TOPIC_PREDICTION, TOPIC_LATENCY, subscribe_queue
 from .latency_logger import PipelineLatencyLogger, LatencyRecord
+from .subject_table import (
+    build_subject_table,
+    save_table_csv,
+    save_table_json,
+    load_table_json,
+    TABLE_METRIC_COLUMNS,
+)
+from .table_comparison import compare_tables, compare_tables_multi_metric
 
 __all__ = [
     "load_config",
@@ -31,4 +39,11 @@ __all__ = [
     "subscribe_queue",
     "PipelineLatencyLogger",
     "LatencyRecord",
+    "build_subject_table",
+    "save_table_csv",
+    "save_table_json",
+    "load_table_json",
+    "TABLE_METRIC_COLUMNS",
+    "compare_tables",
+    "compare_tables_multi_metric",
 ]

@@ -136,6 +136,68 @@ class SnapshotLogger:
         plt.close(fig)
         return path
 
+    def save_source_activity_visualization(
+        self,
+        pipeline_name: str,
+        source_data: np.ndarray,
+        channel_names: list[str] | None = None,
+        fs: float = 250.0,
+        title: str = "Source activity (e.g. GeDai / lead-field)",
+    ) -> Path:
+        """Save source-space or back-projected activity plot for research comparison."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        d = self.pipeline_dir(pipeline_name)
+        path = d / "source_activity.png"
+        n_ch = min(source_data.shape[1], 8)
+        ch_names = channel_names or [f"Src{i}" for i in range(n_ch)]
+        fig, axes = plt.subplots(n_ch, 1, figsize=(10, 1.5 * n_ch), sharex=True)
+        if n_ch == 1:
+            axes = [axes]
+        data = source_data[0] if source_data.ndim == 3 else source_data
+        t = np.arange(data.shape[1]) / fs
+        for i in range(n_ch):
+            axes[i].plot(t, data[i, :] if data.ndim == 2 else data[0, i, :])
+            axes[i].set_ylabel(ch_names[i] if i < len(ch_names) else f"Src{i}")
+            axes[i].set_ylim(np.percentile(data, 1), np.percentile(data, 99))
+        axes[-1].set_xlabel("Time (s)")
+        fig.suptitle(title)
+        fig.tight_layout()
+        fig.savefig(path, dpi=100)
+        plt.close(fig)
+        return path
+
+    def save_csp_patterns(
+        self,
+        pipeline_name: str,
+        patterns: np.ndarray,
+        channel_names: list[str] | None = None,
+        title: str = "CSP spatial patterns",
+    ) -> Path:
+        """Save CSP pattern topography or bar plot (patterns: n_channels x n_components)."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        d = self.pipeline_dir(pipeline_name)
+        path = d / "csp_patterns.png"
+        n_comp = min(4, patterns.shape[1])
+        ch_names = channel_names or [f"Ch{i}" for i in range(patterns.shape[0])]
+        fig, axes = plt.subplots(1, n_comp, figsize=(2.5 * n_comp, 4))
+        if n_comp == 1:
+            axes = [axes]
+        for i in range(n_comp):
+            ax = axes[i]
+            ax.bar(range(len(ch_names)), patterns[:, i])
+            ax.set_xticks(range(len(ch_names)))
+            ax.set_xticklabels(ch_names, rotation=45, ha="right")
+            ax.set_title(f"Component {i+1}")
+        fig.suptitle(title)
+        fig.tight_layout()
+        fig.savefig(path, dpi=100)
+        plt.close(fig)
+        return path
+
     def save_confusion_matrix(
         self,
         pipeline_name: str,
@@ -176,6 +238,15 @@ class SnapshotLogger:
         pipeline_name: str,
         metrics: dict[str, Any],
         selected: bool = False,
+        spatial_capabilities: dict[str, Any] | None = None,
+        spatial_filter_requested: str | None = None,
+        spatial_filter_used: str | None = None,
+        transfer: dict[str, Any] | None = None,
+        best_pipeline: str | None = None,
+        quick_screening: dict[str, Any] | None = None,
+        early_stopped_pipelines: list[str] | None = None,
+        progressive_halving_used: bool | None = None,
+        adaptive_pruning: dict[str, Any] | None = None,
     ) -> Path:
         d = self.pipeline_dir(pipeline_name)
         path = d / "metrics.json"
@@ -185,6 +256,22 @@ class SnapshotLogger:
             "selected": selected,
             "metrics": metrics,
         }
+        if spatial_capabilities is not None or spatial_filter_requested is not None or spatial_filter_used is not None:
+            payload["spatial_capabilities"] = spatial_capabilities
+            payload["spatial_filter_requested"] = spatial_filter_requested
+            payload["spatial_filter_used"] = spatial_filter_used
+        if transfer is not None:
+            payload["transfer"] = transfer
+        if best_pipeline is not None:
+            payload["best_pipeline"] = best_pipeline
+        if quick_screening is not None:
+            payload["quick_screening"] = quick_screening
+        if early_stopped_pipelines is not None:
+            payload["early_stopped_pipelines"] = early_stopped_pipelines
+        if progressive_halving_used is not None:
+            payload["progressive_halving_used"] = progressive_halving_used
+        if adaptive_pruning is not None:
+            payload["adaptive_pruning"] = adaptive_pruning
         with open(path, "w") as f:
             json.dump(payload, f, indent=2)
         return path

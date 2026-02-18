@@ -79,6 +79,39 @@ def sequential_calibration_split(
     return train_idx, test_idx
 
 
+def k_fold_trial_indices(
+    n_trials: int,
+    n_folds: int = 5,
+    shuffle: bool = True,
+    random_state: int | None = 42,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """
+    K-fold split at trial level. Returns list of (train_indices, val_indices).
+    Use for cross-validation in pipeline selection (no leakage).
+    """
+    if n_folds < 2 or n_trials < n_folds:
+        return []
+    try:
+        from sklearn.model_selection import KFold
+        kf = KFold(n_splits=n_folds, shuffle=shuffle, random_state=random_state)
+        return [(train_idx, val_idx) for train_idx, val_idx in kf.split(np.arange(n_trials))]
+    except ImportError:
+        rng = np.random.default_rng(random_state)
+        indices = np.arange(n_trials)
+        if shuffle:
+            indices = rng.permutation(indices)
+        folds = []
+        for f in range(n_folds):
+            val_size = n_trials // n_folds
+            val_start = f * val_size
+            val_end = n_trials if f == n_folds - 1 else (f + 1) * val_size
+            val_idx = indices[val_start:val_end]
+            train_idx = np.concatenate([indices[:val_start], indices[val_end:]])
+            if len(train_idx) > 0 and len(val_idx) > 0:
+                folds.append((train_idx, val_idx))
+        return folds
+
+
 def get_train_test_trials(
     n_trials: int,
     subject_ids: np.ndarray | None = None,
@@ -88,17 +121,24 @@ def get_train_test_trials(
     random_state: int | None = 42,
     split_mode: str = "train_test",
     n_calibration_trials: int = 20,
+    n_trials_from_t: int | None = None,
+    use_cross_session: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Get train and test trial indices with no leakage.
     - split_mode "sequential": first n_calibration_trials = calibration, rest = live stream (no shuffle).
     - split_mode "train_test" (default): use evaluation_mode and train_ratio.
+    - use_cross_session + n_trials_from_t: train = trials [0, n_trials_from_t), test = [n_trials_from_t, n_trials).
     - evaluation_mode "subject_wise": trial-wise split within subject (shuffle, then 80/20).
     - evaluation_mode "cross_subject" / "loso": use loso_subject as holdout.
     - No preprocessing or CSP fitting on test_indices.
     """
     if split_mode == "sequential":
         return sequential_calibration_split(n_trials, n_calibration_trials)
+    if use_cross_session and n_trials_from_t is not None and n_trials_from_t > 0 and n_trials_from_t < n_trials:
+        train_idx = np.arange(0, n_trials_from_t)
+        test_idx = np.arange(n_trials_from_t, n_trials)
+        return train_idx, test_idx
     if subject_ids is not None and loso_subject is not None:
         return subject_to_trial_indices(subject_ids, loso_subject)
     if subject_ids is not None and evaluation_mode in ("cross_subject", "loso"):

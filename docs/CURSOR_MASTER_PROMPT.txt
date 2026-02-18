@@ -1,0 +1,42 @@
+================================================================================
+MASTER IMPLEMENTATION + SELF-OPTIMIZATION PROMPT — COPY THIS INTO CURSOR CHAT
+================================================================================
+
+Implement the memory-safe cross-subject EEG domain adaptation framework per docs/MASTER_IMPLEMENTATION_PROMPT.md. Execute in order until all targets are met.
+
+TARGETS (STRICT):
+- Dataset: BNCI2014_001, Protocol: cross_subject_loso
+- Stage 1: baseline_mean ≥ 45% (subjects 1–3), ≥ 50% (all 9), std ≤ 12%, memory ≤ 4GB
+- Stage 2 (only after Stage 1): unsupervised +3% gain, few-shot +5% gain
+
+HARD CONSTRAINTS (VIOLATE → ABORT):
+- No target test leakage; reference from source only
+- gc.collect() after each fold; no feature caching; float32; sequential folds
+- LOSO: target_subject not in source_subjects
+
+REQUIRED IMPLEMENTATION:
+1. Filter Bank Riemann: bands 8–12, 12–16, 16–20, 20–24, 24–30 Hz; per band: bandpass → OAS cov → tangent → concat
+2. MI time window: enforce crop 2–6 s for BNCI2014_001
+3. LogisticRegression: inner CV on source only for C ∈ {0.1, 1, 10}
+4. Optional: z_score_tangent on tangent features
+
+IMPROVEMENT LOOP (until baseline_mean ≥ 0.45):
+- If acc < 40%: enforce MI crop (2–6 s)
+- If acc < 45%: enable filter bank
+- If still low: enable tangent z-score
+- If still low: tune logistic C (source-only inner CV)
+- If still low: verify class balance and preprocessing order
+- Log every change; rollback if accuracy drops
+
+MEMORY: Before/after each fold assert spread < 4GB; if exceeded stop and fix.
+
+VALIDATION: After each run print mean, std, per-subject accs, feature dim, memory spread, stats tests.
+
+OUTPUT: Save to results/loso_validation_results.json when targets achieved.
+
+DO NOT: Add deep models, domain adversarial, GPU, or load all subjects at once (use per-fold load when safe_low_memory_mode).
+
+RUN: python -m pytest tests/test_loso_transfer_validation.py::test_loso_no_leakage_and_control_experiments -v -s
+CHECK: results/loso_validation_results.json baseline_mean
+
+ITERATE until baseline_mean ≥ 0.45 on subjects 1–3, then run all 9 and reach ≥ 50%.

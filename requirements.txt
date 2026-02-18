@@ -20,6 +20,9 @@ torch>=2.0
 # Optional: Riemannian (install pyriemann for better covariance features)
 # pyriemann>=0.5
 
+# Optional: MOABB for extra datasets and cross-dataset benchmarking (pip install moabb)
+# moabb>=1.1
+
 # Web interface (--web): detailed zoomable EEG view
 fastapi>=0.109
 uvicorn[standard]>=0.27

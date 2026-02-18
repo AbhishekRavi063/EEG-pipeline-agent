@@ -17,7 +17,7 @@ class RiemannianFeatures(FeatureExtractorBase):
 
     def _cov(self, x: np.ndarray) -> np.ndarray:
         c = np.cov(x)
-        c += 1e-6 * np.eye(c.shape[0])
+        c += 1e-5 * np.eye(c.shape[0])
         return c
 
     def _logm(self, M: np.ndarray) -> np.ndarray:
@@ -32,7 +32,7 @@ class RiemannianFeatures(FeatureExtractorBase):
     def fit(self, X: np.ndarray, y: np.ndarray) -> "RiemannianFeatures":
         covs = [self._cov(x) for x in X]
         self._ref_cov = np.mean(covs, axis=0)
-        self._ref_cov += 1e-6 * np.eye(self._ref_cov.shape[0])
+        self._ref_cov += 1e-5 * np.eye(self._ref_cov.shape[0])
         self._fitted = True
         return self
 

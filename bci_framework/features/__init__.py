@@ -5,6 +5,9 @@ from .csp import CSPFeatures
 from .psd import PSDFeatures
 from .wavelet import WaveletFeatures
 from .riemannian import RiemannianFeatures
+from .covariance import CovarianceFeatures
+from .riemann_tangent_oas import RiemannTangentOAS
+from .filter_bank_riemann import FilterBankRiemann
 from .deep import DeepFeatureExtractor
 from .raw import RawFeatures
 
@@ -13,6 +16,9 @@ FEATURE_REGISTRY: dict[str, type[FeatureExtractorBase]] = {
     "psd": PSDFeatures,
     "wavelet": WaveletFeatures,
     "riemannian": RiemannianFeatures,
+    "covariance": CovarianceFeatures,
+    "riemann_tangent_oas": RiemannTangentOAS,
+    "filter_bank_riemann": FilterBankRiemann,
     "deep": DeepFeatureExtractor,
     "raw": RawFeatures,
 }
@@ -23,6 +29,9 @@ __all__ = [
     "PSDFeatures",
     "WaveletFeatures",
     "RiemannianFeatures",
+    "CovarianceFeatures",
+    "RiemannTangentOAS",
+    "FilterBankRiemann",
     "DeepFeatureExtractor",
     "RawFeatures",
     "FEATURE_REGISTRY",

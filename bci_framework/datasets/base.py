@@ -21,6 +21,7 @@ class EEGDataset:
     trial_metadata: list[dict] | None = None
     subject_ids_per_trial: np.ndarray | None = None  # (n_trials,) for LOSO
     n_trials_from_t: int | None = None  # first N trials from T session (rest from E); for T/E indicator in UI
+    capabilities: Any = None  # FrameworkCapabilities from capability_checker (v3.1); set by loader
 
     @property
     def n_trials(self) -> int:

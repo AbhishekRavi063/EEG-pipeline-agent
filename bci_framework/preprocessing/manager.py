@@ -16,6 +16,8 @@ from .signal_quality import SignalQualityMonitor
 from .wavelet import WaveletDenoising
 from .bandpass import BandpassFilter
 from .notch import NotchFilter
+from .spatial_filters import SPATIAL_FILTER_REGISTRY, get_spatial_filter
+from .spatial_filters.resolver import resolve_spatial_method, method_for_registry
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,11 @@ ADVANCED_PREPROCESSING_REGISTRY = {
     "asr": ASRArtifactRemoval,
     "signal_quality": SignalQualityMonitor,
 }
+try:
+    from .gedai import GEDAIArtifactRemoval
+    ADVANCED_PREPROCESSING_REGISTRY["gedai"] = GEDAIArtifactRemoval
+except ImportError:
+    pass  # pygedai/torch optional; gedai step only available if installed
 
 
 class MandatoryPreprocessingPipeline:
@@ -58,20 +65,46 @@ class MandatoryPreprocessingPipeline:
 
         band_order = int(prep_cfg.get("bandpass_order", 5))
 
-        reference_mode = (prep_cfg.get("reference", "car") or "car").lower()
-        lap_neigh = prep_cfg.get("laplacian_neighbours") or prep_cfg.get("laplacian_neighbors")
-
         causal = (config.get("mode", "offline").lower() == "online") or bool(prep_cfg.get("force_causal_filters", False))
 
         self.notch = NotchFilter(fs=fs, freq=notch_freq, quality=notch_q, causal=causal)
         self.bandpass = BandpassFilter(fs=fs, lowcut=band_low, highcut=band_high, order=band_order, causal=causal)
 
-        if reference_mode == "laplacian":
-            self.reference: PreprocessingBase = LaplacianReference(fs=fs, neighbours=lap_neigh)
-            if hasattr(self.reference, "set_channel_names") and channel_names:
-                self.reference.set_channel_names(channel_names)
-        else:
-            self.reference = CommonAverageReference(fs=fs)
+        # Spatial filter layer (plugin): config-driven CAR | Laplacian | CSP | gedai (v3.1: strict/auto resolution)
+        spatial_cfg = config.get("spatial_filter", {})
+        requested_method = spatial_cfg.get("method")
+        use_spatial_layer = spatial_cfg.get("enabled", False) and requested_method
+        self.spatial_filter_requested = requested_method
+        self.spatial_filter_used = requested_method  # may be overridden by resolution
+        if use_spatial_layer:
+            capabilities = config.get("spatial_capabilities")
+            if capabilities is not None:
+                try:
+                    resolved_method, actual_used = resolve_spatial_method(requested_method, capabilities)
+                    self.spatial_filter_used = actual_used
+                    requested_method = resolved_method
+                except RuntimeError as e:
+                    logger.error("[SPATIAL] %s", e)
+                    raise
+            # Map laplacian_auto/gedai_auto to registry keys (laplacian, gedai)
+            registry_method = method_for_registry(requested_method) if requested_method else requested_method
+            if registry_method and registry_method in SPATIAL_FILTER_REGISTRY:
+                sf_params = {k: v for k, v in spatial_cfg.items() if k not in ("enabled", "method")}
+                self.spatial_filter = get_spatial_filter(registry_method, fs=fs, **sf_params)
+                if hasattr(self.spatial_filter, "set_channel_names") and channel_names:
+                    self.spatial_filter.set_channel_names(channel_names)
+                self.reference = self.spatial_filter
+            else:
+                use_spatial_layer = False
+        if not use_spatial_layer:
+            reference_mode = (prep_cfg.get("reference", "car") or "car").lower()
+            lap_neigh = prep_cfg.get("laplacian_neighbours") or prep_cfg.get("laplacian_neighbors")
+            if reference_mode == "laplacian":
+                self.reference = LaplacianReference(fs=fs, neighbours=lap_neigh)
+                if hasattr(self.reference, "set_channel_names") and channel_names:
+                    self.reference.set_channel_names(channel_names)
+            else:
+                self.reference = CommonAverageReference(fs=fs)
 
         self.steps: list[tuple[str, PreprocessingBase]] = [
             ("notch", self.notch),

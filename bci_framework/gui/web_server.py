@@ -138,10 +138,13 @@ class WebSocketManager:
 
 def create_app(static_dir: Path, manager: WebSocketManager):
     """Create FastAPI app that serves static files and WebSocket."""
+    from concurrent.futures import ThreadPoolExecutor
     from contextlib import asynccontextmanager
-    from fastapi import FastAPI, WebSocket
+    from fastapi import FastAPI, WebSocket, Request
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
+
+    executor = ThreadPoolExecutor(max_workers=1)
     
     @asynccontextmanager
     async def lifespan(app):
@@ -165,6 +168,57 @@ def create_app(static_dir: Path, manager: WebSocketManager):
         if index_file.exists():
             return FileResponse(index_file)
         return {"message": "BCI Web UI", "static_dir": str(static_dir)}
+
+    @app.get("/compare")
+    async def compare_page():
+        """Pipeline A vs B comparison page (professor's suggestion)."""
+        compare_file = static_dir / "compare.html"
+        if compare_file.exists():
+            return FileResponse(compare_file)
+        return {"message": "compare.html not found", "path": str(compare_file)}
+
+    @app.post("/api/compare_pipelines")
+    async def api_compare_pipelines(request: Request):
+        """Run Pipeline A and B on same subjects, return tables and statistical comparison (p-values)."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        dataset = body.get("dataset", "BNCI2014_001")
+        subjects = body.get("subjects", [1, 2, 3])
+        if not isinstance(subjects, list):
+            subjects = [int(x) for x in str(subjects).replace(",", " ").split()]
+        subjects = [int(s) for s in subjects]
+        config_path_a = body.get("config_path_a")
+        config_path_b = body.get("config_path_b")
+        override_b = body.get("override_b")
+        pipeline_a = body.get("pipeline_a")
+        pipeline_b = body.get("pipeline_b")
+        name_a = body.get("name_a", "Pipeline_A")
+        name_b = body.get("name_b", "Pipeline_B")
+        test = body.get("test", "ttest")
+        loop = asyncio.get_event_loop()
+        try:
+            from bci_framework.evaluation import run_ab_comparison
+            result = await loop.run_in_executor(
+                executor,
+                lambda: run_ab_comparison(
+                    dataset=dataset,
+                    subjects=subjects,
+                    config_path_a=config_path_a,
+                    config_path_b=config_path_b,
+                    override_b=override_b,
+                    pipeline_a=pipeline_a,
+                    pipeline_b=pipeline_b,
+                    name_a=name_a,
+                    name_b=name_b,
+                    test=test,
+                ),
+            )
+            return result
+        except Exception as e:
+            logger.exception("compare_pipelines failed")
+            return {"error": str(e), "table_a": [], "table_b": [], "comparison": {}}
     
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):

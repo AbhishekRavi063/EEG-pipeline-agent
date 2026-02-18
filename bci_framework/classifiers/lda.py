@@ -14,10 +14,18 @@ class LDAClassifier(ClassifierBase):
         super().__init__(n_classes=n_classes, **kwargs)
         self._clf = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "LDAClassifier":
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+    ) -> "LDAClassifier":
         from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
         self._clf = LinearDiscriminantAnalysis()
-        self._clf.fit(X, y)
+        if sample_weight is not None:
+            self._clf.fit(X, y, sample_weight=sample_weight)
+        else:
+            self._clf.fit(X, y)
         return self
 
     def predict(self, X: np.ndarray) -> np.ndarray:

@@ -28,7 +28,12 @@ class EEGNetClassifier(ClassifierBase):
         self._model = None
         self._device = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "EEGNetClassifier":
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+    ) -> "EEGNetClassifier":
         try:
             import torch
             import torch.nn as nn

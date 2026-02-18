@@ -11,7 +11,9 @@ dataset:
   subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9]
   # Per-trial segment length (seconds). BCI IV 2a protocol uses 3 s motor imagery; set to 4 if you want longer segments (GDF must have enough data).
   trial_duration_seconds: 3
-  evaluation_mode: "subject_wise"  # or "cross_subject" / "loso" / "cross_session" for leave-one-subject-out
+  evaluation_mode: "subject_wise"  # subject_wise | cross_subject | loso | cross_session
+  # Research evaluation: scalp_space (baseline) | source_space (GeDai) | hybrid (comparison) | LOSO | cross_dataset (MOABB)
+  research_evaluation_mode: "scalp_space"  # scalp_space | source_space | hybrid
   train_test_split: 0.8
   # IMPORTANT: For BCI IV 2a, use_cross_session_split: true prevents mixing T/E sessions
   # This avoids data leakage and suspiciously high accuracy (reviewers expect T/E split)
@@ -24,6 +26,18 @@ dataset:
   # Streaming mode: "trial" (per-trial batch) or "sliding" (true sliding-window real-time)
   streaming_mode: "trial"  # "trial" | "sliding"
 
+# Spatial filter layer (plugin): replaces reference when enabled (v3.1: strict/auto modes)
+spatial_filter:
+  enabled: true
+  # car | laplacian | laplacian_strict | laplacian_auto | gedai_strict | gedai_auto | csp | gedai
+  # Backward compat: "laplacian" -> laplacian_auto, "gedai" -> gedai_auto
+  method: "laplacian_auto"
+  motor_only: true
+  leadfield_path: null
+  laplacian_neighbours: null
+  auto_select: true
+  methods_for_automl: ["car", "laplacian", "csp"]
+
 preprocessing:
   notch_freq: 50  # 60 for US
   notch_quality: 30
@@ -33,7 +47,7 @@ preprocessing:
   adaptive_motor_band: true  # if task == motor_imagery → use motor band below
   motor_band_low: 8
   motor_band_high: 30
-  reference: "car"  # car | laplacian
+  reference: "car"  # car | laplacian (used when spatial_filter.enabled is false)
   laplacian_neighbours: null  # optional mapping (channel->neighbours)
 
 advanced_preprocessing:
@@ -41,9 +55,10 @@ advanced_preprocessing:
   # GEDAI runs BEFORE ICA to improve source separation (physics-based denoising first)
   enabled: ["signal_quality", "gedai", "ica", "wavelet"]
   gedai:
-    leadfield_path: null   # path to .pt/.npy leadfield; generate with: python -m bci_framework.preprocessing.forward_model
-    use_identity_if_missing: true  # Research mode: require real leadfield (set true for dev/testing)
-    require_real_leadfield: false    # Enforce physics correctness (false allows identity fallback)
+    # Use a real leadfield (FreeSurfer/MNE). Identity is for testing only (otherwise ~PCA, no physics).
+    leadfield_path: null   # path to .pt/.npy; generate: python -m bci_framework.preprocessing.forward_model
+    use_identity_if_missing: false  # true = dev/test only (creator: identity makes no sense for real denoising)
+    require_real_leadfield: true     # Enforce physics: fail if no leadfield (set false to allow identity fallback)
     mode: "batch"          # "batch" (offline) or "sliding" (online, causal, low-latency)
     window_sec: 10.0       # Sliding window duration (for mode="sliding")
     update_interval_sec: 1.0  # How often to recompute eigenvectors (for sliding mode)
@@ -101,33 +116,63 @@ pipelines:
   # Explicit pipelines: [["csp", "lda"], ["psd", "svm"], ...]
   explicit: []
 
+# v3: Domain adaptation / transfer learning (offline, cross-subject only; no streaming)
+# Contract: DA runs ONLY on (n_trials, n_features) after feature extraction. Never on raw EEG.
+# For MI (e.g. BNCI2014_001): riemann_transport is preferred (low memory: 22×22 covariances).
+transfer:
+  enabled: false
+  method: "none"   # none | zscore | coral | riemann_transport (prefer riemann_transport for MI)
+  target_unlabeled_fraction: 0.2   # first N% of target trials as unlabeled adaptation (LOSO)
+  regularization: 1e-3   # CORAL epsilon for numerical stability
+  safe_mode: false   # true: CORAL dim cap 128, float32, skip adaptation if unsafe (8–16GB RAM)
+
 # Calibration protocol: duration (trials), baseline evaluation, sliding-window adaptation
 calibration:
   duration_trials: 50
   baseline_min_trials: 30
   sliding_window_adaptation: true
 
-# Real-time streaming: sliding window + full-dataset simulation
+# Unified streaming: offline vs online (real-time)
 streaming:
-  # Mode: "trial" (per-trial batch) or "sliding" (true sliding-window real-time)
-  mode: "trial"  # "trial" | "sliding"
-  window_size_sec: 1.5  # Sliding window size (for sliding mode)
-  overlap_ratio: 0.5  # 50% overlap recommended (for trial mode)
+  mode: "offline"  # offline | online (online = real-time safe, precomputed filters only)
+  window_size_sec: 1.0   # causal window for pipeline (1 s typical)
+  overlap_sec: 0.5       # overlap between consecutive windows (0.5 = 50%)
+  # Trial mode (per-trial batch) vs sliding (continuous)
+  pipeline_mode: "trial"  # "trial" | "sliding"
   window_size_samples: null  # set from fs if null
-  # Sliding-window specific settings
-  buffer_length_sec: 10.0  # Ring buffer length (for sliding mode)
-  update_interval_sec: 0.1  # How often to trigger inference (e.g., 100ms)
-  # After best pipeline selected: stream full test set like real processing
-  stream_full_test_set: true  # stream all test trials (not just first N)
-  real_time_timing: true  # sleep so elapsed time = real-time (trial_duration_sec per trial)
-  trial_duration_sec: 3.0  # delay between trials in simulation (matches real BCI trial length)
+  buffer_length_sec: 10.0  # Ring buffer (online/sliding)
+  update_interval_sec: 0.1
+  stream_full_test_set: true
+  real_time_timing: true
+  trial_duration_sec: 3.0
 
 agent:
   calibration_trials: 50
+  # v2: k-fold CV for pipeline ranking (use mean CV accuracy; reduces overfitting)
+  cv_folds: 5
+  overfit_penalty_weight: 0.2   # penalty for (train_accuracy - cv_accuracy) in composite score
+  prefer_linear_models: true    # tie-break: prefer LDA / linear SVM
   # Online mode: first N trials for calibration, rest live stream
   calibration_window_trials: 5   # online: number of trials for initial calibration
   top_n_pipelines: 3
   trial_duration_sec: 3.0  # for ITR
+  # Smart adaptive pruning (reduce compute; backward compatible if quick_screening missing)
+  quick_screening:
+    enabled: true
+    subset_fraction: 0.25
+    min_accuracy_threshold: 0.35
+    max_pipelines_after_screening: 5
+    ranking_metric: balanced_accuracy
+    min_pipelines_to_keep: 3
+    max_pipelines_to_keep: 6
+    num_repeats: 2
+    dynamic_top_k: true
+    exclude_pipelines: ["gedai"]
+    random_state: 42
+  early_cv_stop: true
+  progressive_halving:
+    enabled: false
+    reduction_factor: 2
   prune_thresholds:
     min_accuracy: 0.45
     min_accuracy_online: 0.5    # online calibration early pruning
@@ -196,10 +241,11 @@ compute:
   max_parallel_pipelines: 5
   use_gpu: true  # PyTorch MPS/CUDA if available
 
-# Future placeholders
+# Future placeholders (extensibility)
 future:
-  real_eeg_hardware: null  # OpenBCI, Emotiv
+  real_eeg_hardware: null  # OpenBCI, Emotiv, LSL
   mcp_llm_integration: false
   cloud_training: false
   reinforcement_learning_selector: false
+  federated_bci_learning: false
   human_in_the_loop_feedback: true

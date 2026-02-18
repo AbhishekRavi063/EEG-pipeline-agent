@@ -34,17 +34,18 @@ class GEDAIArtifactRemoval(AdvancedPreprocessingBase):
     GEDAI denoising: GEVD-based artifact removal using a leadfield-derived reference.
 
     Physics-correct implementation with:
-    - MNE-based forward model leadfield (required by default)
+    - MNE-based or FreeSurfer leadfield (required for real denoising)
     - Sliding-window online mode (causal, low-latency)
     - GPU acceleration support
-    - Enhanced logging (covariance, SNR metrics)
 
-    Requires pygedai and PyTorch. In sliding-window mode, supports online/real-time use.
+    Leadfield (creator guidance):
+    - Use a REAL leadfield (FreeSurfer or MNE forward model). Identity matrix is for
+      testing the code only—with identity, GEDAI is effectively PCA and has no
+      physics-based artifact removal. Set leadfield_path and use_identity_if_missing=False.
+    - Best denoising: spectral GEDAI = 1st pass broadband GEDAI + 2nd pass wavelet GEDAI.
+    - Real-time: wavelet GEDAI can be run in parallel on multi-core CPU.
 
-    Scientific rationale:
-    GEDAI compares data covariance against a physics-based leadfield reference covariance
-    via generalized eigenvalue decomposition. Components aligned with neural sources are
-    retained; artifacts are filtered. Should run BEFORE ICA to improve source separation.
+    See docs/GEDAI_CREATOR_NOTES.md for full creator recommendations.
     """
 
     name = "gedai"
@@ -56,8 +57,8 @@ class GEDAIArtifactRemoval(AdvancedPreprocessingBase):
         self,
         fs: float,
         leadfield_path: str | None = None,
-        use_identity_if_missing: bool = False,  # Changed default: require real leadfield
-        require_real_leadfield: bool = True,  # Research mode: enforce physics correctness
+        use_identity_if_missing: bool = False,  # True = dev/test only (identity ~ PCA; creator: no sense for real denoising)
+        require_real_leadfield: bool = True,  # Fail if no leadfield; use real FreeSurfer/MNE leadfield
         mode: str = "batch",  # "batch" or "sliding" for online
         window_sec: float = 10.0,  # Sliding window duration (for mode="sliding")
         update_interval_sec: float = 1.0,  # How often to recompute eigenvectors
@@ -154,15 +155,19 @@ class GEDAIArtifactRemoval(AdvancedPreprocessingBase):
                 except Exception as e:
                     logger.warning("GEDAI: failed to load leadfield from %s: %s", path, e)
 
-        # Fallback: identity or error
+        # Fallback: identity or error (creator: identity is for testing only, otherwise ~PCA)
         if self.use_identity_if_missing:
             if self.require_real_leadfield:
                 logger.warning(
                     "GEDAI: require_real_leadfield=True but using identity fallback. "
-                    "This breaks physics assumptions. Consider generating a real leadfield."
+                    "Identity is for testing only—use a real leadfield for physics-based denoising."
                 )
             self._leadfield = torch.eye(n_channels, dtype=self.dtype, device=self.device)
-            logger.info("GEDAI: using identity leadfield for %d channels (dev mode)", n_channels)
+            logger.warning(
+                "GEDAI: using identity leadfield for %d channels (TESTING ONLY; no physics-based denoising). "
+                "For real denoising use leadfield_path with FreeSurfer/MNE leadfield.",
+                n_channels,
+            )
             return self._leadfield
 
         raise ValueError(
