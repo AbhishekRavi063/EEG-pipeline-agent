@@ -107,7 +107,7 @@ def _run_online_mode(
                 channel_names=channel_names,
                 class_names=class_names,
                 refresh_rate_ms=gui_cfg.get("refresh_rate_ms", 100),
-                eeg_channels_display=gui_cfg.get("eeg_channels_display", 8),
+                eeg_channels_display=len(channel_names),
                 window_seconds=gui_cfg.get("window_seconds", 4.0),
                 manager=manager,
             )
@@ -117,11 +117,12 @@ def _run_online_mode(
                 channel_names=channel_names,
                 class_names=class_names,
                 refresh_rate_ms=gui_cfg.get("refresh_rate_ms", 100),
-                eeg_channels_display=gui_cfg.get("eeg_channels_display", 8),
+                eeg_channels_display=len(channel_names),
                 window_seconds=gui_cfg.get("window_seconds", 4.0),
             )
         app.set_dataset_source(dataset_source)
         app.set_subject(subject_id)
+        app.set_available_subjects(subjects)
         app.set_phase("Calibration")
         app.set_trial_progress(0, n_trials)
 
@@ -514,21 +515,13 @@ def main() -> None:
         web_port = gui_cfg.get("web_port", DEFAULT_WEB_PORT)
         start_server_thread(manager, static_dir, web_port)
         import time
-        import webbrowser
         time.sleep(3)  # give server time to bind (or try next port if in use)
-        actual_port = getattr(manager, "_port", web_port)
-        url = "http://127.0.0.1:%s" % actual_port
-        logger.info("Web UI: opening %s in your browser (keep this terminal open)", url)
-        try:
-            webbrowser.open(url)
-        except Exception as e:
-            logger.warning("Could not open browser: %s — open %s manually", e, url)
         app = WebApp(
             fs=fs,
             channel_names=channel_names,
             class_names=dataset.class_names,
             refresh_rate_ms=gui_cfg.get("refresh_rate_ms", 100),
-            eeg_channels_display=gui_cfg.get("eeg_channels_display", 8),
+            eeg_channels_display=len(channel_names),
             window_seconds=gui_cfg.get("window_seconds", 4.0),
             manager=manager,
         )
@@ -538,7 +531,7 @@ def main() -> None:
             channel_names=channel_names,
             class_names=dataset.class_names,
             refresh_rate_ms=gui_cfg.get("refresh_rate_ms", 100),
-            eeg_channels_display=gui_cfg.get("eeg_channels_display", 8),
+            eeg_channels_display=len(channel_names),
             window_seconds=gui_cfg.get("window_seconds", 4.0),
         )
     app.set_pipeline_metrics({k: v["accuracy"] for k, v in agent.get_metrics_dict().items()})
@@ -546,6 +539,7 @@ def main() -> None:
         app.update_accuracy(name, m.accuracy)
     app.set_best_pipeline(best_pipeline.name)
     app.set_dataset_source(dataset_source)
+    app.set_available_subjects(config.get("dataset", {}).get("subjects", []))
 
     # Real-time streaming: run full test set through best pipeline with real-time pacing
     import numpy as np
@@ -682,6 +676,17 @@ def main() -> None:
             app.set_prediction(int(best_pipeline.predict(first_trial)[0]))
             app.set_trial_progress(0, n_stream)
         
+        # Open browser after seed so UI receives EEG data on first load
+        if args.web and not args.no_gui:
+            import webbrowser
+            actual_port = getattr(getattr(app, "_manager", None), "_port", None) or gui_cfg.get("web_port", DEFAULT_WEB_PORT)
+            url = "http://127.0.0.1:%s" % actual_port
+            logger.info("Web UI: opening %s in your browser (keep this terminal open)", url)
+            try:
+                webbrowser.open(url)
+            except Exception as e:
+                logger.warning("Could not open browser: %s — open %s manually", e, url)
+        
         if not args.no_gui:
             logger.info(
                 "Opening GUI for sliding-window stream with best pipeline: %s (%d test trials). Close window to exit.",
@@ -729,6 +734,17 @@ def main() -> None:
         app.set_filtered_buffer(X_filt_first[0])
         app.set_prediction(int(best_pipeline.predict(first_chunk)[0]))
         app.set_trial_progress(0, n_stream)
+
+    # Open browser only after seed so UI receives EEG data on first load
+    if args.web and not args.no_gui:
+        import webbrowser
+        actual_port = getattr(getattr(app, "_manager", None), "_port", None) or gui_cfg.get("web_port", DEFAULT_WEB_PORT)
+        url = "http://127.0.0.1:%s" % actual_port
+        logger.info("Web UI: opening %s in your browser (keep this terminal open)", url)
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            logger.warning("Could not open browser: %s — open %s manually", e, url)
 
     if not args.no_gui:
         logger.info(

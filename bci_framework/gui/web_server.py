@@ -49,6 +49,29 @@ def _compute_band_powers(data: "np.ndarray", fs: float) -> dict[str, float]:
                 powers[name] = powers.get(name, 0) + p
     n_ch = data.shape[0]
     return {k: v / max(1, n_ch) for k, v in powers.items()}
+
+
+def _compute_psd_welch(data: "np.ndarray", fs: float, nperseg: int = 256):
+    """Compute PSD via Welch's method. Returns (freqs_Hz, psd_mean) in µV²/Hz, or (None, None) on failure."""
+    try:
+        from scipy.signal import welch
+    except ImportError:
+        return None, None
+    data = np.asarray(data, dtype=np.float64)
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    if data.size < nperseg * 2:
+        return None, None
+    nperseg = min(nperseg, data.shape[1] // 2)
+    freqs, psd_0 = welch(data[0], fs=fs, nperseg=nperseg)
+    psd_sum = np.array(psd_0, dtype=np.float64)
+    for ch in range(1, data.shape[0]):
+        _, p = welch(data[ch], fs=fs, nperseg=nperseg)
+        psd_sum += p
+    psd_mean = (psd_sum / data.shape[0]).tolist()
+    return freqs.tolist(), psd_mean
+
+
 import json
 import logging
 import threading
@@ -136,6 +159,63 @@ class WebSocketManager:
                 self.unregister(ws)
 
 
+def _apply_filters_backend(
+    raw_buffer: list,
+    fs: float,
+    bandpass_low: float,
+    bandpass_high: float,
+    notch_freq: float,
+    use_ica: bool,
+) -> dict:
+    """Apply bandpass, notch, and optional ICA. Returns {cleaned_data: [...]} or {error, cleaned_data: None}."""
+    try:
+        import numpy as np
+        from bci_framework.preprocessing.bandpass import BandpassFilter
+        from bci_framework.preprocessing.notch import NotchFilter
+    except ImportError as e:
+        return {"error": str(e), "cleaned_data": None}
+    if fs <= 0:
+        return {"error": "Invalid sampling rate", "cleaned_data": None}
+    nyq = 0.5 * fs
+    if bandpass_low >= bandpass_high:
+        return {"error": "Bandpass low must be < bandpass high", "cleaned_data": None}
+    bandpass_low = max(0.1, min(bandpass_low, nyq - 1))
+    bandpass_high = max(bandpass_low + 0.5, min(bandpass_high, nyq - 0.5))
+    data = np.asarray(raw_buffer, dtype=np.float64)
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    if data.ndim != 2 or data.shape[0] == 0 or data.shape[1] < 64:
+        return {"error": "Invalid raw_buffer shape (need [n_channels, n_samples], min 64 samples)", "cleaned_data": None}
+    # X for filters: (n_trials, n_channels, n_samples)
+    X = data[np.newaxis, :, :]
+    try:
+        out = X.copy()
+        if notch_freq > 0 and notch_freq < nyq:
+            notch = NotchFilter(fs=fs, freq=notch_freq, quality=30.0, causal=False)
+            out = notch.transform(out)
+        bandpass = BandpassFilter(
+            fs=fs, lowcut=bandpass_low, highcut=bandpass_high, order=5, causal=False
+        )
+        out = bandpass.transform(out)
+        if use_ica and X.shape[1] >= 2:
+            try:
+                from sklearn.decomposition import FastICA
+                n_ch = X.shape[1]
+                X_flat = out.transpose(0, 2, 1).reshape(-1, n_ch)
+                n_comp = min(15, n_ch)
+                ica = FastICA(n_components=n_comp, max_iter=500, random_state=42)
+                S = ica.fit_transform(X_flat)
+                X_recon = ica.inverse_transform(S)
+                out = X_recon.reshape(X.shape[0], X.shape[2], n_ch).transpose(0, 2, 1)
+            except Exception:
+                pass
+        cleaned = out[0].tolist()
+        return {"cleaned_data": cleaned}
+    except Exception as e:
+        logger.exception("apply_filters_backend")
+        return {"error": str(e), "cleaned_data": None}
+
+
 def create_app(static_dir: Path, manager: WebSocketManager):
     """Create FastAPI app that serves static files and WebSocket."""
     from concurrent.futures import ThreadPoolExecutor
@@ -158,10 +238,89 @@ def create_app(static_dir: Path, manager: WebSocketManager):
             pass
     
     app = FastAPI(title="BCI EEG Viewer", lifespan=lifespan)
-    
-    if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-    
+
+    from fastapi import APIRouter
+    api_router = APIRouter(prefix="/api", tags=["api"])
+
+    @api_router.post("/apply_filters")
+    async def api_apply_filters(request: Request):
+        """Apply bandpass, notch, and optional ICA to raw EEG. Returns cleaned_data."""
+        from fastapi.responses import JSONResponse
+        try:
+            body = await request.json()
+        except Exception as e:
+            return JSONResponse(status_code=400, content={"error": "Invalid JSON: " + str(e), "cleaned_data": None})
+        raw_buffer = body.get("raw_buffer")
+        try:
+            fs_val = float(body.get("fs", 250.0))
+            bandpass_low = float(body.get("bandpass_low", 1.0))
+            bandpass_high = float(body.get("bandpass_high", 45.0))
+            notch_freq = float(body.get("notch_freq", 50.0))
+            use_ica = bool(body.get("use_ica", False))
+        except (TypeError, ValueError) as e:
+            return JSONResponse(status_code=400, content={"error": "Invalid filter parameters: " + str(e), "cleaned_data": None})
+        if not raw_buffer or not isinstance(raw_buffer, list) or len(raw_buffer) == 0:
+            return JSONResponse(status_code=400, content={"error": "raw_buffer required (list of channel arrays)", "cleaned_data": None})
+        loop = asyncio.get_event_loop()
+        try:
+            result = await loop.run_in_executor(
+                executor,
+                lambda: _apply_filters_backend(
+                    raw_buffer=raw_buffer,
+                    fs=fs_val,
+                    bandpass_low=bandpass_low,
+                    bandpass_high=bandpass_high,
+                    notch_freq=notch_freq,
+                    use_ica=use_ica,
+                ),
+            )
+            if result.get("error"):
+                return JSONResponse(status_code=400, content=result)
+            return result
+        except Exception as e:
+            logger.exception("apply_filters failed")
+            err_msg = str(e) if str(e) else "Filter processing failed"
+            return JSONResponse(status_code=500, content={"error": err_msg, "cleaned_data": None})
+
+    @api_router.post("/compute_psd")
+    async def api_compute_psd(request: Request):
+        """Compute PSD (Welch) for a given buffer. Returns { freq, psd } in Hz and µV²/Hz."""
+        from fastapi.responses import JSONResponse
+        try:
+            body = await request.json()
+        except Exception as e:
+            return JSONResponse(status_code=400, content={"error": "Invalid JSON: " + str(e)})
+        buffer = body.get("buffer") or body.get("raw_buffer")
+        fs_val = float(body.get("fs", 250.0))
+        if not buffer or not isinstance(buffer, list) or len(buffer) == 0:
+            return JSONResponse(status_code=400, content={"error": "buffer required"})
+        try:
+            import numpy as np
+            data = np.asarray(buffer, dtype=np.float64)
+            if data.ndim == 1:
+                data = data.reshape(1, -1)
+            if data.size < 256:
+                return JSONResponse(status_code=400, content={"error": "buffer too short for PSD"})
+            freqs, psd = _compute_psd_welch(data, fs_val)
+            if freqs is None or psd is None:
+                return JSONResponse(status_code=500, content={"error": "PSD computation failed"})
+            return {"freq": freqs, "psd": psd}
+        except Exception as e:
+            logger.exception("compute_psd failed")
+            return JSONResponse(status_code=500, content={"error": str(e)})
+
+    @api_router.get("/dataset_info")
+    async def api_dataset_info():
+        """Return dataset metadata from live app state (same as homepage) for the compare page."""
+        state = manager.get_state()
+        out = {}
+        for key in ("dataset_source", "n_channels", "fs", "window_seconds", "available_subjects"):
+            if key in state and state[key] is not None:
+                out[key] = state[key]
+        return out
+
+    app.include_router(api_router)
+
     @app.get("/")
     async def index():
         index_file = static_dir / "index.html"
@@ -177,6 +336,9 @@ def create_app(static_dir: Path, manager: WebSocketManager):
             return FileResponse(compare_file)
         return {"message": "compare.html not found", "path": str(compare_file)}
 
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
     @app.post("/api/compare_pipelines")
     async def api_compare_pipelines(request: Request):
         """Run Pipeline A and B on same subjects, return tables and statistical comparison (p-values)."""
@@ -185,6 +347,9 @@ def create_app(static_dir: Path, manager: WebSocketManager):
         except Exception:
             body = {}
         dataset = body.get("dataset", "BNCI2014_001")
+        # Map internal dataset names to MOABB class names (compare uses MOABB loader)
+        if dataset and str(dataset).strip().upper() in ("BCI_IV_2A", "BCI_IV_2a"):
+            dataset = "BNCI2014_001"
         subjects = body.get("subjects", [1, 2, 3])
         if not isinstance(subjects, list):
             subjects = [int(x) for x in str(subjects).replace(",", " ").split()]
@@ -276,14 +441,17 @@ class WebApp:
         self._live_correct: list[bool] = []  # per-trial correctness during live stream
         self._is_labeled: bool = True  # current trial has label (T) or not (E)
         self._trial_source: str = ""  # "T (labeled)" or "E (unlabeled)"
+        self._available_subjects: list[int | str] = []  # subject IDs available for the dataset
     
     def _broadcast(self) -> None:
         """Push current state to web clients."""
         state = {
             "fs": self.fs,
             "channel_names": self.channel_names[: self.eeg_channels_display],
-            "class_names": self.class_names,
+            "n_channels": len(self.channel_names),
             "window_samples": self.window_samples,
+            "window_seconds": self.window_samples / self.fs if self.fs else 0,
+            "class_names": self.class_names,
             "phase": self._phase,
             "dataset_source": self._dataset_source,
             "subject": self._subject,
@@ -298,6 +466,7 @@ class WebApp:
             "accuracy_history": self._live_accuracy_history() if self._live_correct else self._accuracy_history[-200:],
             "is_labeled": self._is_labeled,
             "trial_source": self._trial_source,
+            "available_subjects": list(self._available_subjects),
         }
         if self._raw_buffer is not None:
             buf = np.asarray(self._raw_buffer, dtype=np.float64)
@@ -310,6 +479,10 @@ class WebApp:
             band_powers = _compute_band_powers(buf, self.fs)
             if band_powers:
                 state["band_powers"] = band_powers
+            psd_freq, psd_raw = _compute_psd_welch(buf, self.fs)
+            if psd_freq is not None and psd_raw is not None:
+                state["psd_freq"] = psd_freq
+                state["psd_raw"] = psd_raw
         if self._filtered_buffer is not None:
             buf = np.asarray(self._filtered_buffer, dtype=np.float64)
             if buf.ndim == 1:
@@ -321,6 +494,10 @@ class WebApp:
             band_powers_filt = _compute_band_powers(buf, self.fs)
             if band_powers_filt:
                 state["band_powers_filtered"] = band_powers_filt
+            psd_freq_f, psd_filt = _compute_psd_welch(buf, self.fs)
+            if psd_freq_f is not None and psd_filt is not None:
+                state["psd_freq_filtered"] = psd_freq_f
+                state["psd_filtered"] = psd_filt
         self._manager.update_state(**state)
     
     def set_raw_buffer(self, data: np.ndarray) -> None:
@@ -359,6 +536,11 @@ class WebApp:
     
     def set_dataset_source(self, source: str) -> None:
         self._dataset_source = source
+        self._broadcast()
+
+    def set_available_subjects(self, subject_ids: list[int | str]) -> None:
+        """Set list of subject IDs available for the dataset (for metadata display)."""
+        self._available_subjects = list(subject_ids) if subject_ids else []
         self._broadcast()
 
     def set_subject(self, subject_id: int | str | None) -> None:

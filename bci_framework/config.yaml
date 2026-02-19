@@ -52,13 +52,17 @@ preprocessing:
 
 advanced_preprocessing:
   # Scientific order enforced: signal_quality -> gedai -> ica -> asr -> wavelet
-  # GEDAI runs BEFORE ICA to improve source separation (physics-based denoising first)
-  enabled: ["signal_quality", "gedai", "ica", "wavelet"]
+  # GEDAI disabled by default (slow with identity; needs leadfield for real denoising).
+  # To enable: add "gedai" to enabled, and either (a) set leadfield_path to a .npy file
+  #   (generate: python -m bci_framework.preprocessing.forward_model, requires FreeSurfer SUBJECTS_DIR),
+  #   or (b) set use_identity_if_missing: true, require_real_leadfield: false for testing (≈PCA).
+  enabled: ["signal_quality", "ica", "wavelet"]
   gedai:
-    # Use a real leadfield (FreeSurfer/MNE). Identity is for testing only (otherwise ~PCA, no physics).
-    leadfield_path: null   # path to .pt/.npy; generate: python -m bci_framework.preprocessing.forward_model
-    use_identity_if_missing: false  # true = dev/test only (creator: identity makes no sense for real denoising)
-    require_real_leadfield: true     # Enforce physics: fail if no leadfield (set false to allow identity fallback)
+    # For real physics-based denoising: set leadfield_path to generated .npy (requires FreeSurfer fsaverage).
+    # Generate with: python -m bci_framework.preprocessing.forward_model (after setting SUBJECTS_DIR).
+    leadfield_path: null   # e.g. ./data/leadfield_bci_iv_2a.npy
+    use_identity_if_missing: true    # true = run without leadfield (identity ~ PCA; ok for development)
+    require_real_leadfield: false    # Allow identity fallback when no leadfield
     mode: "batch"          # "batch" (offline) or "sliding" (online, causal, low-latency)
     window_sec: 10.0       # Sliding window duration (for mode="sliding")
     update_interval_sec: 1.0  # How often to recompute eigenvectors (for sliding mode)

@@ -27,3 +27,6 @@ torch>=2.0
 fastapi>=0.109
 uvicorn[standard]>=0.27
 websockets>=12.0
+
+# Statistical comparison: DeLong test for comparing AUC of two ROC curves (professor suggestion)
+MLstatkit>=0.1.91

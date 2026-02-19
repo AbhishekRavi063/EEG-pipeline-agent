@@ -172,10 +172,10 @@ class BCICompetitionIV2aLoader(DatasetLoader):
         ch_names = raw.ch_names[:N_EEG_CHANNELS] if hasattr(raw, "ch_names") else []
         if len(ch_names) < N_EEG_CHANNELS:
             ch_names = ch_names + [f"EEG{i+1}" for i in range(len(ch_names), N_EEG_CHANNELS)]
-        # If names look generic (EEG1, EEG 1, etc.), use standard 10-20 montage names
-        if ch_names and all(re.match(r"^EEG\s*\d+$", str(c).strip(), re.IGNORECASE) for c in ch_names[:N_EEG_CHANNELS]):
+        # BCI IV 2a uses a fixed 22-channel 10-20 montage; always use standard names (Fz, FC3, C3, ...)
+        if len(ch_names) >= N_EEG_CHANNELS:
             ch_names = list(BCI_IV_2a_CHANNEL_NAMES)
-            logger.debug("Using standard 10-20 channel names for BCI IV 2a (replacing generic EEG1..EEG22)")
+            logger.debug("Using standard 10-20 channel names for BCI IV 2a: Fz, FC3, C3, Cz, ...")
         # v3.1: detect spatial capabilities once from MNE Raw
         self.capabilities = getattr(self, "capabilities", None) or detect_spatial_capabilities(raw)
         n_trials_from_t = loaded_sessions[0][1] if loaded_sessions else None

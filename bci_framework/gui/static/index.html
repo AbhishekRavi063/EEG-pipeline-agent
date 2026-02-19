@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>BCI EEG Viewer — Live Stream</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
   <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
   <style>
     * { box-sizing: border-box; }
@@ -33,6 +35,27 @@
       box-shadow: 0 1px 2px rgba(0,0,0,0.04);
     }
     .status span { margin-right: 1rem; }
+    .filter-panel {
+      background: #fff;
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 20px;
+      border: 1px solid #e5e7eb;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .filter-panel h3 { margin: 0 0 12px 0; font-size: 0.95rem; color: #374151; }
+    .filter-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; margin-bottom: 12px; }
+    .filter-row:last-child { margin-bottom: 0; }
+    .filter-group { display: flex; flex-direction: column; gap: 4px; }
+    .filter-group label { font-size: 0.8rem; color: #6b7280; font-weight: 500; }
+    .filter-group input, .filter-group select { padding: 6px 10px; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 0.9rem; }
+    .filter-group input[type="number"] { width: 80px; }
+    .filter-group input[type="checkbox"] { width: 18px; height: 18px; margin: 0; }
+    .filter-group.inline { flex-direction: row; align-items: center; }
+    .btn { padding: 8px 16px; border-radius: 6px; font-size: 0.9rem; font-weight: 600; cursor: pointer; border: none; background: #2563eb; color: #fff; }
+    .btn:hover { background: #1d4ed8; }
+    .btn:disabled { background: #9ca3af; cursor: not-allowed; }
+    .time-span-group { display: flex; align-items: center; gap: 8px; }
     .plot-container {
       background: #fff;
       border-radius: 8px;
@@ -52,7 +75,8 @@
       color: #374151;
     }
     .plotly-graph-div { width: 100% !important; }
-    #rawPlot, #filteredPlot { height: 420px; margin-bottom: 8px; }
+    .chart-container { position: relative; height: 420px; margin-bottom: 8px; }
+    #rawChartCanvas, #filteredChartCanvas { width: 100% !important; height: 100% !important; }
     #bandPowerPlot, #bandPowerFilteredPlot { height: 260px; margin-bottom: 8px; }
     #pipelineBar { height: 300px; margin-bottom: 16px; }
     #accuracyPlot { height: 280px; }
@@ -69,6 +93,9 @@
     .pipeline-detail-table tr.selected { background: #ecfdf5; }
     .pipeline-detail-table tr.selected td { color: #047857; font-weight: 500; }
     .score-formula { font-family: ui-monospace, monospace; font-size: 0.8rem; color: #6b7280; margin-top: 6px; }
+    .chart-actions { margin-bottom: 8px; display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+    .chart-actions .btn-zoom-reset { padding: 6px 12px; font-size: 0.85rem; background: #6b7280; }
+    .chart-actions .btn-zoom-reset:hover { background: #4b5563; }
   </style>
 </head>
 <body>
@@ -79,6 +106,7 @@
     <span id="subject"></span>
     <span id="phase"></span>
     <span id="dataset"></span>
+    <span id="datasetMeta" class="dataset-meta"></span>
     <span id="pipeline"></span>
     <span id="trial"></span>
     <span id="prediction"></span>
@@ -86,24 +114,93 @@
     <span id="rollingAcc"></span>
   </div>
 
+  <!-- CONTEXT & FILTER PRESETS + FILTER CONTROLS -->
+  <div class="filter-panel">
+    <h3>CONTEXT & FILTER PRESETS</h3>
+    <div class="filter-row">
+      <div class="filter-group">
+        <label>Preset (use case)</label>
+        <select id="filterPreset">
+          <option value="research">Research (1–45 Hz, 50 Hz notch)</option>
+          <option value="clinical">Clinical (0.5–50 Hz, 50 Hz notch)</option>
+          <option value="neurofeedback">Neurofeedback (4–30 Hz, 50 Hz notch)</option>
+          <option value="sleep">Sleep (0.1–30 Hz, 50 Hz notch)</option>
+          <option value="teaching">Teaching (1–45 Hz, 50 Hz notch)</option>
+        </select>
+      </div>
+    </div>
+    <h3 style="margin-top: 16px;">FILTER CONTROLS</h3>
+    <div class="filter-row">
+      <div class="filter-group">
+        <label>Bandpass low (Hz)</label>
+        <input type="number" id="bandpassLow" value="1" min="0.1" max="100" step="0.1">
+      </div>
+      <div class="filter-group">
+        <label>Bandpass high (Hz)</label>
+        <input type="number" id="bandpassHigh" value="45" min="1" max="200" step="1">
+      </div>
+      <div class="filter-group">
+        <label>Notch (Hz)</label>
+        <select id="notchFreq">
+          <option value="50">50</option>
+          <option value="60">60</option>
+        </select>
+      </div>
+      <div class="filter-group inline">
+        <input type="checkbox" id="useIca">
+        <label for="useIca">ICA (artifact removal)</label>
+      </div>
+      <div class="filter-group">
+        <button class="btn" id="applyFiltersBtn">Apply filters & clean</button>
+      </div>
+    </div>
+    <div class="filter-row">
+      <div class="filter-group time-span-group">
+        <label>Time span</label>
+        <select id="timeSpan">
+          <option value="1">1 s</option>
+          <option value="2">2 s</option>
+          <option value="3">3 s</option>
+          <option value="5">5 s</option>
+          <option value="10">10 s</option>
+          <option value="30">30 s</option>
+          <option value="60">60 s</option>
+          <option value="full" selected>Full</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
   <div class="plot-container">
-    <h2>Raw EEG (zoom/pan/drag to inspect — detailed view)</h2>
-    <p class="chart-note">Unprocessed (or minimally preprocessed) trial. May include line noise (50/60 Hz), drift, and broad-band noise — so the trace can look noisier.</p>
-    <div id="rawPlot"></div>
+    <h2>Temporal (Time Domain) — Raw EEG</h2>
+    <p class="chart-note">Original, unfiltered signal (eegData.data). Zoom/pan synced with Processed below.</p>
+    <div class="chart-actions"><button type="button" class="btn btn-zoom-reset" id="rawZoomResetBtn">Reset zoom</button></div>
+    <div class="chart-container"><canvas id="rawChartCanvas"></canvas></div>
   </div>
   <div class="plot-container">
-    <h2>Processed (filtered) EEG (zoom/pan for detail)</h2>
-    <p class="chart-note">Same trial after the pipeline: notch (line removal), bandpass (e.g. motor band 8–30 Hz), CAR/Laplacian, and optional steps (signal quality, ICA, wavelet). The smoother look is from <strong>actual processing</strong> — no display smoothing is applied; high-frequency and out-of-band noise are removed by the pipeline.</p>
-    <div id="filteredPlot"></div>
+    <h2>Temporal (Time Domain) — Processed EEG</h2>
+    <p class="chart-note">Filtered data (bandpass, notch, ICA). When you click "Apply filters & clean", this shows cleaned data; otherwise pipeline output.</p>
+    <div class="chart-actions"><button type="button" class="btn btn-zoom-reset" id="filteredZoomResetBtn">Reset zoom</button></div>
+    <div class="chart-container"><canvas id="filteredChartCanvas"></canvas></div>
+  </div>
+  <div class="plot-container">
+    <h2>Power Spectral Density (PSD) — raw EEG — Welch's method</h2>
+    <p class="chart-note"><strong>Welch's method</strong> (scipy.signal.welch, nperseg=256). <strong>X-axis:</strong> Frequency (Hz). <strong>Y-axis:</strong> Power per unit frequency (µV²/Hz) — mean across channels. Peaks = dominant rhythms (e.g. alpha 8–13 Hz).</p>
+    <div id="psdRawPlot"></div>
+  </div>
+  <div class="plot-container">
+    <h2>Power Spectral Density (PSD) — processed EEG — Welch's method</h2>
+    <p class="chart-note">Same as above for the <strong>filtered</strong> signal (Welch's method). Updates when you apply filters: bandpass/notch reduce power outside the passband.</p>
+    <div id="psdFilteredPlot"></div>
   </div>
   <div class="plot-container plot-container--psd-raw">
     <h2>Active frequency bands — raw EEG</h2>
-    <p class="chart-note">EEG bands + noise/artifact bands from <strong>raw</strong> EEG. EEG: delta (0.5–4), theta (4–8), alpha (8–13), beta (13–30), gamma (30–45) Hz. Noise: drift (0.1–0.5), line_50 (48–52), line_60 (58–62), emg (45–100) Hz.</p>
+    <p class="chart-note">EEG bands + noise/artifact bands from <strong>raw</strong> EEG.</p>
     <div id="bandPowerPlot"></div>
   </div>
   <div class="plot-container plot-container--psd-filtered">
     <h2>Active frequency bands — processed (filtered) EEG</h2>
-    <p class="chart-note">EEG bands + noise bands from <strong>filtered</strong> EEG. After bandpass/notch — noise bands are attenuated when preprocessing removes them.</p>
+    <p class="chart-note">EEG bands + noise bands from <strong>filtered</strong> EEG.</p>
     <div id="bandPowerFilteredPlot"></div>
   </div>
   <div class="plot-container">
@@ -112,7 +209,6 @@
   </div>
   <div class="plot-container plot-container--pipeline">
     <h2>Pipeline comparison (calibration accuracy)</h2>
-    <p class="chart-note">Best pipeline is chosen by <strong>composite score</strong>. When several have the same accuracy (e.g. 1.0), the one with <strong>lowest latency</strong> is selected. Formula:</p>
     <p class="score-formula">score = 0.4×accuracy + 0.3×kappa + 0.2×stability − 0.1×(latency in seconds)</p>
     <div id="pipelineBar"></div>
     <div id="pipelineDetailTable"></div>
@@ -120,169 +216,485 @@
 
   <script>
     const WS_URL = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws';
-    let rawPlotEl = document.getElementById('rawPlot');
-    let filteredPlotEl = document.getElementById('filteredPlot');
-    let bandPowerPlotEl = document.getElementById('bandPowerPlot');
-    let bandPowerFilteredPlotEl = document.getElementById('bandPowerFilteredPlot');
-    let pipelineBarEl = document.getElementById('pipelineBar');
-    let accuracyPlotEl = document.getElementById('accuracyPlot');
-    let wsStatusEl = document.getElementById('wsStatus');
-    let phaseEl = document.getElementById('phase');
-    let subjectEl = document.getElementById('subject');
-    let datasetEl = document.getElementById('dataset');
-    let pipelineEl = document.getElementById('pipeline');
-    let trialEl = document.getElementById('trial');
-    let predictionEl = document.getElementById('prediction');
-    let trialSourceEl = document.getElementById('trialSource');
-    let rollingAccEl = document.getElementById('rollingAcc');
+    const API_BASE = location.origin;
 
     let fs = 250;
     let windowSamples = 1000;
     let channelNames = [];
+    var BCI_IV_2a_NAMES = ['Fz','FC3','FC1','FCz','FC2','FC4','C5','C3','C1','Cz','C2','C4','C6','CP3','CP1','CPz','CP2','CP4','P1','Pz','P2','POz'];
+    function normalizeChannelNames(names) {
+      if (!names || names.length !== 22) return names;
+      var generic = /^EEG\s*[-]?\s*\d+$/i;
+      if (names.every(function(n) { return generic.test(String(n).trim()); })) return BCI_IV_2a_NAMES.slice();
+      return names;
+    }
+    let eegData = { data: null, preview: null };
+    let cleanedData = { cleaned_data: null };
+    let userPsdFreq = null;
+    let userPsd = null;
+    let rawChart = null;
+    let filteredChart = null;
 
-    const layoutCommon = {
-      paper_bgcolor: '#fff',
-      plot_bgcolor: '#fafafa',
-      font: { color: '#374151', size: 11 },
-      margin: { t: 28, r: 24, b: 36, l: 52 },
-      xaxis: { title: 'Time (s)', gridcolor: '#e5e7eb', zeroline: true, zerolinecolor: '#e5e7eb' },
-      yaxis: { title: 'µV (stacked)', gridcolor: '#e5e7eb', zeroline: true, zerolinecolor: '#e5e7eb' },
-      showlegend: true,
-      legend: { orientation: 'h', y: 1.02, x: 0, font: { size: 10, color: '#374151' } },
-      dragmode: 'pan',
+    // Filter presets: { bandpassLow, bandpassHigh, notch }
+    const FILTER_PRESETS = {
+      research: { bandpassLow: 1, bandpassHigh: 45, notch: 50 },
+      clinical: { bandpassLow: 0.5, bandpassHigh: 50, notch: 50 },
+      neurofeedback: { bandpassLow: 4, bandpassHigh: 30, notch: 50 },
+      sleep: { bandpassLow: 0.1, bandpassHigh: 30, notch: 50 },
+      teaching: { bandpassLow: 1, bandpassHigh: 45, notch: 50 },
     };
 
-    function initPlaceholderCharts() {
-      const emptyTrace = { x: [0], y: [0], type: 'scatter', mode: 'lines', line: { color: '#9ca3af' } };
-      const layoutEEG = { ...layoutCommon, title: 'Raw EEG — waiting for data…', height: 420, annotations: [{ text: 'Waiting for data…', xref: 'paper', yref: 'paper', x: 0.5, y: 0.5, showarrow: false, font: { size: 14, color: '#6b7280' } }] };
-      Plotly.react(rawPlotEl, [emptyTrace], layoutEEG, { responsive: true });
-      Plotly.react(filteredPlotEl, [emptyTrace], { ...layoutCommon, title: 'Processed EEG — waiting for data…', height: 420, annotations: [{ text: 'Waiting for data…', xref: 'paper', yref: 'paper', x: 0.5, y: 0.5, showarrow: false, font: { size: 14, color: '#6b7280' } }] }, { responsive: true });
-      const allBands = ['delta','theta','alpha','beta','gamma','drift','line_50','line_60','emg'];
-      const bandColors = { delta: '#6b7280', theta: '#9ca3af', alpha: '#059669', beta: '#2563eb', gamma: '#d97706', drift: '#dc2626', line_50: '#ea580c', line_60: '#ca8a04', emg: '#7c3aed' };
-      const bandPowerLayout = { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151', size: 10 }, margin: { t: 24, r: 24, b: 80, l: 52 }, xaxis: { tickangle: -45, gridcolor: '#e5e7eb', tickfont: { size: 9 } }, yaxis: { title: 'Power (µV²)', gridcolor: '#e5e7eb' }, height: 260, annotations: [{ text: 'Waiting for data…', xref: 'paper', yref: 'paper', x: 0.5, y: 0.5, showarrow: false, font: { size: 14, color: '#6b7280' } }] };
-      Plotly.react(bandPowerPlotEl, [{ x: allBands, y: allBands.map(() => 0), type: 'bar', marker: { color: allBands.map(b => bandColors[b] || '#9ca3af') } }], bandPowerLayout, { responsive: true });
-      Plotly.react(bandPowerFilteredPlotEl, [{ x: allBands, y: allBands.map(() => 0), type: 'bar', marker: { color: allBands.map(b => bandColors[b] || '#9ca3af') } }], bandPowerLayout, { responsive: true });
-      Plotly.react(pipelineBarEl, [{ x: [], y: [], type: 'bar', marker: { color: '#2563eb' } }], { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151' }, margin: { t: 24, r: 24, b: 80, l: 48 }, xaxis: { tickangle: -45, gridcolor: '#e5e7eb' }, yaxis: { title: 'Accuracy', range: [0, 1.05], gridcolor: '#e5e7eb' }, height: 280, annotations: [{ text: 'Waiting for calibration…', xref: 'paper', yref: 'paper', x: 0.5, y: 0.5, showarrow: false, font: { size: 14, color: '#6b7280' } }] }, { responsive: true });
-      Plotly.react(accuracyPlotEl, [{ x: [0], y: [0], type: 'scatter', mode: 'lines', line: { color: '#059669', width: 2 } }], { ...layoutCommon, xaxis: { ...layoutCommon.xaxis, title: 'Trial' }, yaxis: { ...layoutCommon.yaxis, title: 'Accuracy', range: [0, 1.05] }, height: 260, annotations: [{ text: 'Waiting for live stream…', xref: 'paper', yref: 'paper', x: 0.5, y: 0.5, showarrow: false, font: { size: 14, color: '#6b7280' } }] }, { responsive: true });
+    function applyPresetToControls(presetId) {
+      const p = FILTER_PRESETS[presetId] || FILTER_PRESETS.research;
+      document.getElementById('bandpassLow').value = p.bandpassLow;
+      document.getElementById('bandpassHigh').value = p.bandpassHigh;
+      document.getElementById('notchFreq').value = String(p.notch);
     }
 
-    function buildRawTraces(rawBuffer, channelNames, fs) {
-      if (!rawBuffer || !rawBuffer.length) return [];
-      const nCh = rawBuffer.length;
-      const nSamp = rawBuffer[0].length;
-      const t = Array.from({ length: nSamp }, (_, i) => i / fs);
-      const flat = rawBuffer.flat();
-      const lo = Math.min(...flat);
-      const hi = Math.max(...flat);
-      const span = Math.max(hi - lo, 1e-9);
-      const spacing = span * 2;
-      const traces = [];
+    document.getElementById('filterPreset').addEventListener('change', function() {
+      applyPresetToControls(this.value);
+    });
+
+    function downsample(data, maxPoints) {
+      if (!data || !data.length) return data;
+      const nCh = data.length;
+      const nSamp = data[0].length;
+      if (nSamp <= maxPoints) return data;
+      const step = nSamp / maxPoints;
+      const out = [];
       for (let ch = 0; ch < nCh; ch++) {
-        const y = rawBuffer[ch].map(v => v + ch * spacing);
-        traces.push({
-          x: t,
-          y,
-          name: (channelNames && channelNames[ch]) || ('Ch' + ch),
-          type: 'scatter',
-          mode: 'lines',
-          line: { width: 1.2 },
-        });
+        const row = [];
+        for (let i = 0; i < maxPoints; i++) {
+          const idx = Math.min(Math.floor(i * step), nSamp - 1);
+          row.push(data[ch][idx]);
+        }
+        out.push(row);
       }
-      return traces;
+      return out;
     }
 
-    function buildFilteredTraces(filteredBuffer, channelNames, fs) {
-      if (!filteredBuffer || !filteredBuffer.length) return [];
-      const nCh = filteredBuffer.length;
-      const nSamp = filteredBuffer[0].length;
-      const t = Array.from({ length: nSamp }, (_, i) => i / fs);
-      const flat = filteredBuffer.flat();
-      const lo = Math.min(...flat);
-      const hi = Math.max(...flat);
-      const span = Math.max(hi - lo, 1e-9);
-      const spacing = span * 2;
-      const traces = [];
+    function stackChannelsRealAmplitude(data) {
+      if (!data || !data.length) return data;
+      const nCh = data.length;
+      const flat = data.flat();
+      const dataMin = Math.min(...flat);
+      const dataMax = Math.max(...flat);
+      const range = Math.max(dataMax - dataMin, 1e-9);
+      const spacing = range * 1.2;
+      const out = [];
       for (let ch = 0; ch < nCh; ch++) {
-        const y = filteredBuffer[ch].map(v => v + ch * spacing);
-        traces.push({
-          x: t,
-          y,
-          name: (channelNames && channelNames[ch]) || ('Ch' + ch),
-          type: 'scatter',
-          mode: 'lines',
-          line: { width: 1.2 },
-        });
+        const offset = ch * spacing;
+        out.push(data[ch].map(function(v) { return v + offset; }));
       }
-      return traces;
+      return out;
     }
+
+    let syncInProgress = false;
+    function createSyncHandler(otherChartRef) {
+      return function(ctx) {
+        if (syncInProgress) return;
+        const source = ctx && (ctx.chart || ctx);
+        const other = otherChartRef;
+        if (!source || !other || !source.scales || !source.scales.x) return;
+        const xScale = source.scales.x;
+        syncInProgress = true;
+        try {
+          other.options.scales.x.min = xScale.min;
+          other.options.scales.x.max = xScale.max;
+          other.update('none');
+        } finally {
+          syncInProgress = false;
+        }
+      };
+    }
+
+    function eegChartOptions(samplingRate) {
+      const sr = samplingRate || 250;
+      return {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'dataset', intersect: true },
+        plugins: {
+          tooltip: {
+            callbacks: {
+              label: function(context) {
+                const v = context.parsed.y;
+                const label = context.dataset.label || ('Ch' + context.datasetIndex);
+                const s = typeof v === 'number' && (Math.abs(v) >= 1e3 || (Math.abs(v) < 0.01 && v !== 0)) ? v.toExponential(2) : (typeof v === 'number' ? v.toFixed(3) : v);
+                return label + ': ' + s + ' \u00B5V';
+              }
+            }
+          },
+          legend: { display: true, position: 'top' },
+          zoom: {
+            zoom: {
+              mode: 'x',
+              wheel: { enabled: true },
+              pinch: { enabled: true },
+            },
+            pan: { mode: 'x', enabled: true },
+            limits: { x: { min: 'original', max: 'original' } },
+          },
+        },
+        scales: {
+          x: {
+            type: 'linear',
+            title: { display: true, text: 'Time (s)' },
+            ticks: {
+              callback: function(val) {
+                return sr && typeof val === 'number' ? (val / sr).toFixed(2) : val;
+              },
+            },
+          },
+          y: {
+            title: { display: true, text: 'Amplitude (\u00B5V)' },
+            ticks: {
+              display: true,
+              maxTicksLimit: 12,
+              callback: function(val) {
+                if (typeof val !== 'number') return val;
+                var a = Math.abs(val);
+                if (a >= 1e6) return (val / 1e6).toFixed(1) + 'M';
+                if (a >= 1e3) return (val / 1e3).toFixed(1) + 'k';
+                if (a >= 1 || a === 0) return val.toFixed(1);
+                if (a >= 0.01) return val.toFixed(2);
+                return val.toExponential(1);
+              },
+            },
+          },
+        },
+      };
+    }
+
+    function buildChartData(buffer, channelNamesArr, samplingRate, timespanSeconds) {
+      if (!buffer || !buffer.length) return { labels: [], datasets: [] };
+      const sr = samplingRate || 250;
+      let sliced = buffer;
+      const nSamp = buffer[0].length;
+      const maxSamples = timespanSeconds === 'full' || !timespanSeconds
+        ? nSamp
+        : Math.min(Math.floor(timespanSeconds * sr), nSamp);
+      if (maxSamples < nSamp) {
+        sliced = buffer.map(ch => ch.slice(0, maxSamples));
+      }
+      // No downsampling: use full resolution for scientific analysis (true sample-level detail).
+      const stacked = stackChannelsRealAmplitude(sliced);
+      const labels = stacked[0] ? stacked[0].map((_, i) => i) : [];
+      const colors = ['#2563eb','#059669','#d97706','#dc2626','#7c3aed','#0891b2','#65a30d','#be185d'];
+      const datasets = stacked.map((chData, ch) => ({
+        data: chData.map((v, i) => ({ x: i, y: v })),
+        label: (channelNamesArr && channelNamesArr[ch] !== undefined && channelNamesArr[ch] !== null && String(channelNamesArr[ch]).trim() !== '') ? String(channelNamesArr[ch]).trim() : ('Ch' + ch),
+        borderColor: colors[ch % colors.length],
+        backgroundColor: 'transparent',
+        borderWidth: 1,
+        pointRadius: 0,
+        tension: 0,
+      }));
+      return { labels, datasets };
+    }
+
+    function initEEGCharts() {
+      const rawCtx = document.getElementById('rawChartCanvas').getContext('2d');
+      const filteredCtx = document.getElementById('filteredChartCanvas').getContext('2d');
+
+      rawChart = new Chart(rawCtx, {
+        type: 'line',
+        data: { labels: [], datasets: [] },
+        options: eegChartOptions(fs),
+      });
+
+      filteredChart = new Chart(filteredCtx, {
+        type: 'line',
+        data: { labels: [], datasets: [] },
+        options: eegChartOptions(fs),
+      });
+
+      // Sync channel visibility (hide/show) between both EEG charts when legend is clicked
+      function syncVisibilityToOther(chart, otherChart) {
+        const vis = getChartVisibility(chart);
+        if (otherChart && otherChart.data.datasets.length === vis.length) setChartVisibility(otherChart, vis);
+      }
+      rawChart.options.plugins.legend.onClick = function(e, legendItem, legend) {
+        const chart = legend.chart;
+        const idx = legendItem.datasetIndex != null ? legendItem.datasetIndex : legendItem.index;
+        const meta = chart.getDatasetMeta(idx);
+        if (meta) { meta.hidden = !meta.hidden; chart.update('none'); syncVisibilityToOther(rawChart, filteredChart); }
+      };
+      filteredChart.options.plugins.legend.onClick = function(e, legendItem, legend) {
+        const chart = legend.chart;
+        const idx = legendItem.datasetIndex != null ? legendItem.datasetIndex : legendItem.index;
+        const meta = chart.getDatasetMeta(idx);
+        if (meta) { meta.hidden = !meta.hidden; chart.update('none'); syncVisibilityToOther(filteredChart, rawChart); }
+      };
+
+      rawChart.options.plugins.zoom.zoom.onZoomComplete = createSyncHandler(filteredChart);
+      rawChart.options.plugins.zoom.pan.onPanComplete = createSyncHandler(filteredChart);
+      filteredChart.options.plugins.zoom.zoom.onZoomComplete = createSyncHandler(rawChart);
+      filteredChart.options.plugins.zoom.pan.onPanComplete = createSyncHandler(rawChart);
+    }
+
+    function resetEEGZoom() {
+      if (!rawChart || !filteredChart) return;
+      syncInProgress = true;
+      try {
+        if (typeof rawChart.resetZoom === 'function') rawChart.resetZoom();
+        else if (rawChart.data.datasets.length && rawChart.data.datasets[0].data.length) {
+          const n = rawChart.data.datasets[0].data.length;
+          rawChart.options.scales.x.min = 0;
+          rawChart.options.scales.x.max = Math.max(n - 1, 0);
+          rawChart.update('none');
+        }
+        if (typeof filteredChart.resetZoom === 'function') filteredChart.resetZoom();
+        else if (filteredChart.data.datasets.length && filteredChart.data.datasets[0].data.length) {
+          const n = filteredChart.data.datasets[0].data.length;
+          filteredChart.options.scales.x.min = 0;
+          filteredChart.options.scales.x.max = Math.max(n - 1, 0);
+          filteredChart.update('none');
+        }
+      } finally {
+        syncInProgress = false;
+      }
+    }
+
+    function getTimeSpanSeconds() {
+      const v = document.getElementById('timeSpan').value;
+      return v === 'full' ? 'full' : parseFloat(v);
+    }
+
+    function getChartVisibility(chart) {
+      if (!chart || !chart.data.datasets.length) return [];
+      const out = [];
+      for (let i = 0; i < chart.data.datasets.length; i++) {
+        const meta = chart.getDatasetMeta(i);
+        out.push(meta && !meta.hidden);
+      }
+      return out;
+    }
+
+    function setChartVisibility(chart, visible) {
+      if (!chart || !visible.length) return;
+      for (let i = 0; i < Math.min(visible.length, chart.data.datasets.length); i++) {
+        if (chart.setDatasetVisibility) chart.setDatasetVisibility(i, visible[i]);
+        else {
+          const meta = chart.getDatasetMeta(i);
+          if (meta) meta.hidden = !visible[i];
+        }
+      }
+      chart.update('none');
+    }
+
+    function updateEEGCharts() {
+      const ts = getTimeSpanSeconds();
+      const rawBuf = eegData.data || eegData.preview;
+      const procBuf = cleanedData.cleaned_data || null;
+
+      if (rawBuf && rawBuf.length) {
+        const savedVisible = getChartVisibility(rawChart);
+        const d = buildChartData(rawBuf, channelNames, fs, ts);
+        rawChart.data.labels = d.labels;
+        rawChart.data.datasets = d.datasets;
+        rawChart.options.scales.x.min = d.labels[0];
+        rawChart.options.scales.x.max = d.labels[d.labels.length - 1];
+        rawChart.update('none');
+        if (savedVisible.length === d.datasets.length) setChartVisibility(rawChart, savedVisible);
+      }
+
+      const displayBuf = procBuf || rawBuf;
+      if (displayBuf && displayBuf.length) {
+        const savedVisible = getChartVisibility(filteredChart);
+        const d = buildChartData(displayBuf, channelNames, fs, ts);
+        filteredChart.data.labels = d.labels;
+        filteredChart.data.datasets = d.datasets;
+        filteredChart.options.scales.x.min = d.labels[0];
+        filteredChart.options.scales.x.max = d.labels[d.labels.length - 1];
+        filteredChart.update('none');
+        if (savedVisible.length === d.datasets.length) setChartVisibility(filteredChart, savedVisible);
+      }
+    }
+
+    document.getElementById('timeSpan').addEventListener('change', updateEEGCharts);
+
+    document.getElementById('rawZoomResetBtn').addEventListener('click', resetEEGZoom);
+    document.getElementById('filteredZoomResetBtn').addEventListener('click', resetEEGZoom);
+
+    document.getElementById('applyFiltersBtn').addEventListener('click', async function() {
+      const rawBuf = eegData.data || eegData.preview;
+      if (!rawBuf || !rawBuf.length) {
+        alert('No raw EEG data available. Wait for the stream to send data.');
+        return;
+      }
+      const btn = this;
+      const origText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Applying…';
+      const bandpassLow = parseFloat(document.getElementById('bandpassLow').value);
+      const bandpassHigh = parseFloat(document.getElementById('bandpassHigh').value);
+      const notchFreq = parseFloat(document.getElementById('notchFreq').value) || 50;
+      const useIca = document.getElementById('useIca').checked;
+      if (isNaN(bandpassLow) || bandpassLow < 0.1) {
+        alert('Bandpass low must be >= 0.1 Hz');
+        btn.disabled = false;
+        btn.textContent = origText;
+        return;
+      }
+      if (isNaN(bandpassHigh) || bandpassHigh <= bandpassLow) {
+        alert('Bandpass high must be greater than bandpass low.');
+        btn.disabled = false;
+        btn.textContent = origText;
+        return;
+      }
+      try {
+        const res = await fetch(API_BASE + '/api/apply_filters', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            raw_buffer: rawBuf,
+            fs,
+            bandpass_low: bandpassLow,
+            bandpass_high: bandpassHigh,
+            notch_freq: notchFreq,
+            use_ica: useIca,
+          }),
+        });
+        let json = {};
+        try {
+          json = await res.json();
+        } catch (_) {
+          alert('Filter error: Invalid response from server (status ' + res.status + '). Check browser console.');
+          btn.disabled = false;
+          btn.textContent = origText;
+          return;
+        }
+        if (res.ok && json.cleaned_data) {
+          cleanedData.cleaned_data = json.cleaned_data;
+          updateEEGCharts();
+          try {
+            const psdRes = await fetch(API_BASE + '/api/compute_psd', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ buffer: json.cleaned_data, fs: fs }),
+            });
+            if (psdRes.ok) {
+              const psdJson = await psdRes.json();
+              if (psdJson.freq && psdJson.psd) {
+                userPsdFreq = psdJson.freq;
+                userPsd = psdJson.psd;
+                function fmtP(v) { return (typeof v === 'number' && (v < 0.01 || v >= 1e4)) ? v.toExponential(3) : (typeof v === 'number' ? v.toFixed(4) : v); }
+                var customP = userPsd.map(function(v) { return fmtP(v) + ' \u00B5V\u00B2/Hz'; });
+                var layout = { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151', size: 11 }, margin: { t: 28, r: 32, b: 44, l: 56 }, xaxis: { title: 'Frequency (Hz)', gridcolor: '#e5e7eb', zeroline: true }, yaxis: { title: 'Power (\u00B5V\u00B2/Hz)', gridcolor: '#e5e7eb', zeroline: true }, height: 300, showlegend: false };
+                Plotly.react(psdFilteredPlotEl, [{ x: userPsdFreq, y: userPsd, customdata: customP, type: 'scatter', mode: 'lines', line: { color: '#059669', width: 1.5 }, hovertemplate: 'Frequency: %{x:.2f} Hz<br>Power: %{customdata}<extra></extra>' }], layout, { responsive: true });
+              }
+            }
+          } catch (_) {}
+        } else {
+          const err = json.error || (json.detail ? (Array.isArray(json.detail) ? json.detail.map(function(d) { return d.msg || JSON.stringify(d); }).join('; ') : String(json.detail)) : null) || ('Server error ' + res.status + ' ' + (res.statusText || ''));
+          alert('Filter error: ' + err);
+        }
+      } catch (e) {
+        alert('Request failed: ' + e.message + '. Is the server running at ' + API_BASE + '?');
+      }
+      btn.disabled = false;
+      btn.textContent = origText;
+    });
+
+    const wsStatusEl = document.getElementById('wsStatus');
+    const phaseEl = document.getElementById('phase');
+    const subjectEl = document.getElementById('subject');
+    const datasetEl = document.getElementById('dataset');
+    const datasetMetaEl = document.getElementById('datasetMeta');
+    const pipelineEl = document.getElementById('pipeline');
+    const trialEl = document.getElementById('trial');
+    const predictionEl = document.getElementById('prediction');
+    const trialSourceEl = document.getElementById('trialSource');
+    const rollingAccEl = document.getElementById('rollingAcc');
+    const psdRawPlotEl = document.getElementById('psdRawPlot');
+    const psdFilteredPlotEl = document.getElementById('psdFilteredPlot');
+    const bandPowerPlotEl = document.getElementById('bandPowerPlot');
+    const bandPowerFilteredPlotEl = document.getElementById('bandPowerFilteredPlot');
+    const pipelineBarEl = document.getElementById('pipelineBar');
+    const accuracyPlotEl = document.getElementById('accuracyPlot');
 
     function updateUI(state) {
       if (state.fs) fs = state.fs;
       if (state.window_samples) windowSamples = state.window_samples;
-      if (state.channel_names) channelNames = state.channel_names;
+      if (state.channel_names && Array.isArray(state.channel_names) && state.channel_names.length) channelNames = normalizeChannelNames(state.channel_names);
 
       wsStatusEl.textContent = 'Connected';
       wsStatusEl.classList.remove('disconnected');
-      phaseEl.textContent = state.phase ? `Phase: ${state.phase}` : '';
-      subjectEl.textContent = state.subject ? `Subject: ${state.subject}` : '';
-      datasetEl.textContent = state.dataset_source ? `Dataset: ${state.dataset_source}` : '';
-      pipelineEl.textContent = state.best_pipeline ? `Pipeline: ${state.best_pipeline}` : '';
+      phaseEl.textContent = state.phase ? 'Phase: ' + state.phase : '';
+      subjectEl.textContent = state.subject ? 'Subject: ' + state.subject : '';
+      datasetEl.textContent = state.dataset_source ? 'Dataset: ' + state.dataset_source : '';
+      const meta = [];
+      if (state.n_channels != null) meta.push(state.n_channels + ' ch');
+      if (state.fs) meta.push(state.fs + ' Hz');
+      if (state.window_seconds != null) meta.push(state.window_seconds.toFixed(1) + ' s');
+      if (state.available_subjects && state.available_subjects.length) {
+        const subs = state.available_subjects.map(function(s) { return String(s); });
+        meta.push('Subjects: ' + subs.join(', '));
+      }
+      datasetMetaEl.textContent = meta.length ? ' | ' + meta.join(' | ') : '';
+      pipelineEl.textContent = state.best_pipeline ? 'Pipeline: ' + state.best_pipeline : '';
       trialEl.textContent = (state.n_trials != null && state.trial_index != null)
-        ? `Trial: ${state.trial_index + 1}/${state.n_trials} (full subject stream)` : '';
-      predictionEl.textContent = state.prediction_name ? `Prediction: ${state.prediction_name}` : '';
+        ? 'Trial: ' + (state.trial_index + 1) + '/' + state.n_trials : '';
+      predictionEl.textContent = state.prediction_name ? 'Prediction: ' + state.prediction_name : '';
       if (state.trial_source) {
         trialSourceEl.textContent = state.trial_source;
         trialSourceEl.classList.remove('t-labeled', 'e-labeled', 'e-unlabeled');
         if (state.trial_source.startsWith('T (')) trialSourceEl.classList.add('t-labeled');
         else if (state.trial_source.startsWith('E (unlabeled')) trialSourceEl.classList.add('e-unlabeled');
-        else trialSourceEl.classList.add('e-labeled');  // E (labeled)
-      } else {
-        trialSourceEl.textContent = '';
-      }
+        else trialSourceEl.classList.add('e-labeled');
+      } else trialSourceEl.textContent = '';
       rollingAccEl.textContent = state.rolling_accuracy != null
-        ? `Rolling acc: ${(state.rolling_accuracy * 100).toFixed(1)}%` : '';
+        ? 'Rolling acc: ' + (state.rolling_accuracy * 100).toFixed(1) + '%' : '';
 
       if (state.raw_buffer && state.raw_buffer.length) {
-        const traces = buildRawTraces(state.raw_buffer, channelNames, fs);
-        const nSamp = state.raw_buffer[0].length;
-        const fullTrialSec = (nSamp - 1) / fs;
-        Plotly.react(rawPlotEl, traces, {
-          ...layoutCommon,
-          margin: { t: 36, r: 32, b: 48, l: 52 },
-          title: `Raw EEG — one trial (0–${fullTrialSec.toFixed(2)} s). Axis = per-trial segment; length set by config: dataset.trial_duration_seconds`,
-          height: 420,
-          xaxis: { ...layoutCommon.xaxis, range: [0, fullTrialSec], title: 'Time (s) — this trial' },
-        }, { responsive: true, scrollZoom: true });
+        eegData.data = state.raw_buffer;
+        eegData.preview = state.raw_buffer;
+        updateEEGCharts();
       }
-
       if (state.filtered_buffer && state.filtered_buffer.length) {
-        const traces = buildFilteredTraces(state.filtered_buffer, channelNames, fs);
-        const nSamp = state.filtered_buffer[0].length;
-        const fullTrialSec = (nSamp - 1) / fs;
-        Plotly.react(filteredPlotEl, traces, {
-          ...layoutCommon,
-          margin: { t: 36, r: 32, b: 48, l: 52 },
-          title: `Processed EEG — one trial (0–${fullTrialSec.toFixed(2)} s). Axis = per-trial segment; length set by config: dataset.trial_duration_seconds`,
-          height: 420,
-          xaxis: { ...layoutCommon.xaxis, range: [0, fullTrialSec], title: 'Time (s) — this trial' },
-        }, { responsive: true, scrollZoom: true });
+        cleanedData.cleaned_data = state.filtered_buffer;
+        userPsdFreq = null;
+        userPsd = null;
+        updateEEGCharts();
       }
 
-      const bandOrder = ['delta', 'theta', 'alpha', 'beta', 'gamma', 'drift', 'line_50', 'line_60', 'emg'];
+      const bandOrder = ['delta','theta','alpha','beta','gamma','drift','line_50','line_60','emg'];
       const bandFreqLabels = { drift: '0.1–0.5 Hz', line_50: '48–52 Hz', line_60: '58–62 Hz', emg: '45–100 Hz' };
       const bandColors = { delta: '#6b7280', theta: '#9ca3af', alpha: '#059669', beta: '#2563eb', gamma: '#d97706', drift: '#dc2626', line_50: '#ea580c', line_60: '#ca8a04', emg: '#7c3aed' };
-      const bandLayout = { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151', size: 10 }, margin: { t: 32, r: 32, b: 80, l: 52 }, xaxis: { tickangle: -45, gridcolor: '#e5e7eb', tickfont: { size: 9 } }, yaxis: { title: 'Power (µV²)', gridcolor: '#e5e7eb' }, height: 260 };
+      const bandLayout = { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151', size: 10 }, margin: { t: 32, r: 32, b: 80, l: 52 }, xaxis: { tickangle: -45, gridcolor: '#e5e7eb', tickfont: { size: 9 } }, yaxis: { title: 'Power (μV²)', gridcolor: '#e5e7eb' }, height: 260 };
       const makeBandTrace = (powers) => {
         const names = bandOrder.filter(b => powers[b] != null);
         const vals = names.map(b => powers[b]);
         const labels = names.map(b => bandFreqLabels[b] ? b + ' (' + bandFreqLabels[b] + ')' : b);
-        return { x: labels, y: vals, type: 'bar', marker: { color: names.map(b => bandColors[b] || '#a0aec0') }, hovertemplate: '<b>%{x}</b><br>Power: %{y:.4f} µV²<extra></extra>' };
+        return { x: labels, y: vals, type: 'bar', marker: { color: names.map(b => bandColors[b] || '#a0aec0') }, hovertemplate: '<b>%{x}</b><br>Power: %{y:.4f} μV²<extra></extra>' };
       };
       if (state.band_powers && Object.keys(state.band_powers).length) {
         Plotly.react(bandPowerPlotEl, [makeBandTrace(state.band_powers)], bandLayout, { responsive: true });
       }
       if (state.band_powers_filtered && Object.keys(state.band_powers_filtered).length) {
         Plotly.react(bandPowerFilteredPlotEl, [makeBandTrace(state.band_powers_filtered)], bandLayout, { responsive: true });
+      }
+
+      const psdLayout = { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151', size: 11 }, margin: { t: 28, r: 32, b: 44, l: 56 }, xaxis: { title: 'Frequency (Hz)', gridcolor: '#e5e7eb', zeroline: true }, yaxis: { title: 'Power (\u00B5V\u00B2/Hz)', gridcolor: '#e5e7eb', zeroline: true }, height: 300, showlegend: false };
+      function fmtPsdPower(v) { return (typeof v === 'number' && (v < 0.01 || v >= 1e4)) ? v.toExponential(3) : (typeof v === 'number' ? v.toFixed(4) : v); }
+      if (state.psd_freq && state.psd_raw && state.psd_raw.length) {
+        var rawCustom = state.psd_raw.map(function(v) { return fmtPsdPower(v) + ' \u00B5V\u00B2/Hz'; });
+        Plotly.react(psdRawPlotEl, [{ x: state.psd_freq, y: state.psd_raw, customdata: rawCustom, type: 'scatter', mode: 'lines', line: { color: '#2563eb', width: 1.5 }, hovertemplate: 'Frequency: %{x:.2f} Hz<br>Power: %{customdata}<extra></extra>' }], psdLayout, { responsive: true });
+      } else if (state.raw_buffer && state.raw_buffer.length && state.raw_buffer[0] && state.raw_buffer[0].length >= 256 && state.fs) {
+        fetch(API_BASE + '/api/compute_psd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ buffer: state.raw_buffer, fs: state.fs }) })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(j) { if (j && j.freq && j.psd && j.psd.length) { var c = j.psd.map(function(v) { return fmtPsdPower(v) + ' \u00B5V\u00B2/Hz'; }); Plotly.react(psdRawPlotEl, [{ x: j.freq, y: j.psd, customdata: c, type: 'scatter', mode: 'lines', line: { color: '#2563eb', width: 1.5 }, hovertemplate: 'Frequency: %{x:.2f} Hz<br>Power: %{customdata}<extra></extra>' }], psdLayout, { responsive: true }); } });
+      }
+      var psdFreqF = userPsdFreq || (state.psd_freq_filtered || []);
+      var psdFilt = userPsd || (state.psd_filtered || []);
+      if (psdFreqF.length && psdFilt.length) {
+        var filtCustom = psdFilt.map(function(v) { return fmtPsdPower(v) + ' \u00B5V\u00B2/Hz'; });
+        Plotly.react(psdFilteredPlotEl, [{ x: psdFreqF, y: psdFilt, customdata: filtCustom, type: 'scatter', mode: 'lines', line: { color: '#059669', width: 1.5 }, hovertemplate: 'Frequency: %{x:.2f} Hz<br>Power: %{customdata}<extra></extra>' }], psdLayout, { responsive: true });
+      } else if (state.filtered_buffer && state.filtered_buffer.length && state.filtered_buffer[0] && state.filtered_buffer[0].length >= 256 && state.fs) {
+        fetch(API_BASE + '/api/compute_psd', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ buffer: state.filtered_buffer, fs: state.fs }) })
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(j) { if (j && j.freq && j.psd && j.psd.length) { var c = j.psd.map(function(v) { return fmtPsdPower(v) + ' \u00B5V\u00B2/Hz'; }); Plotly.react(psdFilteredPlotEl, [{ x: j.freq, y: j.psd, customdata: c, type: 'scatter', mode: 'lines', line: { color: '#059669', width: 1.5 }, hovertemplate: 'Frequency: %{x:.2f} Hz<br>Power: %{customdata}<extra></extra>' }], psdLayout, { responsive: true }); } });
       }
 
       if (state.pipeline_metrics && Object.keys(state.pipeline_metrics).length) {
@@ -293,23 +705,8 @@
           const d = detail[n] || {};
           return [d.kappa != null ? d.kappa.toFixed(3) : '—', d.latency_ms != null ? d.latency_ms.toFixed(1) : '—', d.stability != null ? d.stability.toFixed(3) : '—'];
         });
-        const trace = {
-          x: names,
-          y: vals,
-          type: 'bar',
-          marker: { color: '#2563eb' },
-          customdata: customdata,
-          hovertemplate: '<b>%{x}</b><br>Accuracy: %{y:.3f}<br>Kappa: %{customdata[0]}<br>Latency: %{customdata[1]} ms<br>Stability: %{customdata[2]}<extra></extra>',
-        };
-        const layout = {
-          paper_bgcolor: '#fff',
-          plot_bgcolor: '#fafafa',
-          font: { color: '#374151' },
-          margin: { t: 32, r: 32, b: 100, l: 52 },
-          xaxis: { tickangle: -45, gridcolor: '#e5e7eb' },
-          yaxis: { title: 'Accuracy', range: [0, 1.05], gridcolor: '#e5e7eb' },
-          height: 300,
-        };
+        const trace = { x: names, y: vals, type: 'bar', marker: { color: '#2563eb' }, customdata, hovertemplate: '<b>%{x}</b><br>Accuracy: %{y:.3f}<br>Kappa: %{customdata[0]}<br>Latency: %{customdata[1]} ms<extra></extra>' };
+        const layout = { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151' }, margin: { t: 32, r: 32, b: 100, l: 52 }, xaxis: { tickangle: -45, gridcolor: '#e5e7eb' }, yaxis: { title: 'Accuracy', range: [0, 1.05], gridcolor: '#e5e7eb' }, height: 300 };
         Plotly.react(pipelineBarEl, [trace], layout, { responsive: true });
       }
       const pipelineDetailEl = document.getElementById('pipelineDetailTable');
@@ -323,37 +720,34 @@
           const latSec = (d.latency_ms != null ? d.latency_ms : 0) / 1000;
           return (0.4 * acc + 0.3 * kappa + 0.2 * stab - 0.1 * latSec);
         };
-        const rows = names.map(n => {
-          const d = state.pipeline_metrics_detail[n];
-          const score = composite(d);
+        const scores = names.map(n => ({ name: n, score: composite(state.pipeline_metrics_detail[n]), d: state.pipeline_metrics_detail[n] }));
+        scores.sort((a, b) => b.score - a.score);
+        const rows = scores.map(function(o) {
+          const n = o.name;
+          const d = o.d;
+          const score = o.score;
           const isSelected = n === best;
-          return '<tr class="' + (isSelected ? 'selected' : '') + '"><td>' + (isSelected ? '★ ' : '') + n + '</td><td>' + (d.accuracy != null ? d.accuracy.toFixed(3) : '—') + '</td><td>' + (d.kappa != null ? d.kappa.toFixed(3) : '—') + '</td><td>' + (d.latency_ms != null ? d.latency_ms.toFixed(1) : '—') + '</td><td>' + (d.stability != null ? d.stability.toFixed(3) : '—') + '</td><td>' + score.toFixed(3) + '</td></tr>';
+          const why = isSelected ? 'Highest composite score' : '—';
+          return '<tr class="' + (isSelected ? 'selected' : '') + '"><td>' + (isSelected ? '★ ' : '') + n + '</td><td>' + (d.accuracy != null ? d.accuracy.toFixed(3) : '—') + '</td><td>' + (d.kappa != null ? d.kappa.toFixed(3) : '—') + '</td><td>' + (d.latency_ms != null ? d.latency_ms.toFixed(1) : '—') + '</td><td>' + (d.stability != null ? d.stability.toFixed(3) : '—') + '</td><td>' + score.toFixed(3) + '</td><td>' + why + '</td></tr>';
         }).join('');
-        pipelineDetailEl.innerHTML = '<table class="pipeline-detail-table"><thead><tr><th>Pipeline</th><th>Accuracy</th><th>Kappa</th><th>Latency (ms)</th><th>Stability</th><th>Composite score</th></tr></thead><tbody>' + rows + '</tbody></table>';
-      } else if (pipelineDetailEl) {
-        pipelineDetailEl.innerHTML = '';
-      }
+        pipelineDetailEl.innerHTML = '<table class="pipeline-detail-table"><thead><tr><th>Pipeline</th><th>Accuracy</th><th>Kappa</th><th>Latency (ms)</th><th>Stability</th><th>Composite score</th><th>Why selected</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      } else if (pipelineDetailEl) pipelineDetailEl.innerHTML = '';
 
       if (state.accuracy_history && state.accuracy_history.length) {
         const trials = state.accuracy_history.map((_, i) => i + 1);
         const accs = state.accuracy_history.map(a => (Array.isArray(a) && a[1] != null) ? a[1] : (typeof a === 'number' ? a : 0));
-        Plotly.react(accuracyPlotEl, [{ x: trials, y: accs, type: 'scatter', mode: 'lines', line: { color: '#059669', width: 2 } }], { ...layoutCommon, margin: { t: 32, r: 32, b: 48, l: 52 }, xaxis: { ...layoutCommon.xaxis, title: 'Trial' }, yaxis: { ...layoutCommon.yaxis, title: 'Accuracy', range: [0, 1.05] }, height: 280 }, { responsive: true });
+        Plotly.react(accuracyPlotEl, [{ x: trials, y: accs, type: 'scatter', mode: 'lines', line: { color: '#059669', width: 2 } }], { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151' }, margin: { t: 32, r: 32, b: 48, l: 52 }, xaxis: { title: 'Trial', gridcolor: '#e5e7eb' }, yaxis: { title: 'Accuracy', range: [0, 1.05], gridcolor: '#e5e7eb' }, height: 280 }, { responsive: true });
       }
     }
 
     function connect() {
       const ws = new WebSocket(WS_URL);
-      ws.onopen = () => {
-        wsStatusEl.textContent = 'Connected';
-        wsStatusEl.classList.remove('disconnected');
-      };
+      ws.onopen = () => { wsStatusEl.textContent = 'Connected'; wsStatusEl.classList.remove('disconnected'); };
       ws.onmessage = (ev) => {
         try {
           const state = JSON.parse(ev.data);
           updateUI(state);
-        } catch (e) {
-          console.warn('Parse state', e);
-        }
+        } catch (e) { console.warn('Parse state', e); }
       };
       ws.onclose = () => {
         wsStatusEl.textContent = 'Disconnected';
@@ -363,7 +757,17 @@
       ws.onerror = () => {};
     }
 
-    initPlaceholderCharts();
+    initEEGCharts();
+    applyPresetToControls('research');
+    const psdPlaceholderLayout = { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151' }, margin: { t: 28, r: 32, b: 44, l: 56 }, xaxis: { title: 'Frequency (Hz)' }, yaxis: { title: 'Power (µV²/Hz)' }, height: 300, annotations: [{ text: 'Waiting for data…', xref: 'paper', yref: 'paper', x: 0.5, y: 0.5, showarrow: false, font: { size: 14, color: '#6b7280' } }] };
+    Plotly.react(psdRawPlotEl, [{ x: [0], y: [0], type: 'scatter', mode: 'lines', line: { color: '#9ca3af' } }], psdPlaceholderLayout, { responsive: true });
+    Plotly.react(psdFilteredPlotEl, [{ x: [0], y: [0], type: 'scatter', mode: 'lines', line: { color: '#9ca3af' } }], psdPlaceholderLayout, { responsive: true });
+    const allBands = ['delta','theta','alpha','beta','gamma','drift','line_50','line_60','emg'];
+    const bandColors = { delta: '#6b7280', theta: '#9ca3af', alpha: '#059669', beta: '#2563eb', gamma: '#d97706', drift: '#dc2626', line_50: '#ea580c', line_60: '#ca8a04', emg: '#7c3aed' };
+    Plotly.react(bandPowerPlotEl, [{ x: allBands, y: allBands.map(() => 0), type: 'bar', marker: { color: allBands.map(b => bandColors[b] || '#9ca3af') } }], { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151', size: 10 }, margin: { t: 24, r: 24, b: 80, l: 52 }, xaxis: { tickangle: -45, gridcolor: '#e5e7eb' }, yaxis: { title: 'Power (μV²)', gridcolor: '#e5e7eb' }, height: 260 }, { responsive: true });
+    Plotly.react(bandPowerFilteredPlotEl, [{ x: allBands, y: allBands.map(() => 0), type: 'bar', marker: { color: allBands.map(b => bandColors[b] || '#9ca3af') } }], { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151', size: 10 }, margin: { t: 24, r: 24, b: 80, l: 52 }, xaxis: { tickangle: -45, gridcolor: '#e5e7eb' }, yaxis: { title: 'Power (μV²)', gridcolor: '#e5e7eb' }, height: 260 }, { responsive: true });
+    Plotly.react(pipelineBarEl, [{ x: [], y: [], type: 'bar', marker: { color: '#2563eb' } }], { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151' }, margin: { t: 24, r: 24, b: 80, l: 48 }, xaxis: { tickangle: -45, gridcolor: '#e5e7eb' }, yaxis: { title: 'Accuracy', range: [0, 1.05], gridcolor: '#e5e7eb' }, height: 280 }, { responsive: true });
+    Plotly.react(accuracyPlotEl, [{ x: [0], y: [0], type: 'scatter', mode: 'lines', line: { color: '#059669', width: 2 } }], { paper_bgcolor: '#fff', plot_bgcolor: '#fafafa', font: { color: '#374151' }, margin: { t: 24, r: 24, b: 48, l: 52 }, xaxis: { title: 'Trial' }, yaxis: { title: 'Accuracy', range: [0, 1.05] }, height: 280 }, { responsive: true });
     connect();
   </script>
 </body>

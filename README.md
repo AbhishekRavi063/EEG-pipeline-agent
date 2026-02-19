@@ -1,4 +1,4 @@
-BCI AutoML Platform — Full Project Overview
+  BCI AutoML Platform — Full Project Overview
 
 A modular, research-grade Motor Imagery BCI framework in Python. It loads EEG data (BCI IV 2a or MOABB), runs a configurable pipeline (preprocessing, spatial filter, features, optional domain adaptation, classifier), uses an AutoML-style agent to select the best pipeline, and provides desktop and web GUIs plus multi-subject tables and statistical comparison (Pipeline A vs B with p-values). Designed for no data leakage, reproducibility, modularity (config-driven; pluggable datasets, features, classifiers), and research workflow (subject-level tables, p-values, publishable code).
 
@@ -29,7 +29,7 @@ Quick start
 
   GUIs: Desktop (Matplotlib/Tk) and Web (Plotly, zoomable EEG; Pipeline A vs B comparison page with dropdowns and automatic statistical comparison).
 
-  Research: LOSO, transfer learning, subject-level tables (Table_1, Table_2, …) with outcome measures per subject (AUC, balanced accuracy, etc.), paired statistical comparison (t-test, Wilcoxon, p-values) — implementing the professor's workflow (see below).
+  Research: LOSO, transfer learning, subject-level tables (Table_1, Table_2, …) with outcome measures per subject (AUC, balanced accuracy, etc.), paired statistical comparison (permutation test, t-test, Wilcoxon; p-values) — implementing the professor's workflow (see below).
 
 No data leakage (trial-wise or LOSO split); snapshot logging (plots, metrics.json, checkpoints); config-driven; extensible via plugins; memory-conscious (streaming, per-subject LOSO when building tables).
 
@@ -42,7 +42,7 @@ The following research workflow was requested and is fully implemented:
 
   Run exactly the same pipeline but with one setting changed (e.g. different classifier, or replace ICA with GEDAI). That generates Table_2. Every Table_X contains the same subjects (same rows), so you have distributions across the same subjects for each pipeline.
 
-  Compare those distributions with statistics — get p-values to see whether the Table_1 pipeline is significantly different from the Table_2 pipeline (paired t-test or Wilcoxon).
+  Compare those distributions with statistics — get p-values to see whether the Table_1 pipeline is significantly different from the Table_2 pipeline (permutation test recommended, or paired t-test / Wilcoxon).
 
   Workflow: First explore the results to see which comparisons are interesting and statistically significant; then choose a few for the paper; you can publish the code with the paper.
 
@@ -58,7 +58,7 @@ Where it lives:
 
   Tables: bci_framework/utils/subject_table.py — build_subject_table, TABLE_METRIC_COLUMNS (accuracy, balanced_accuracy, roc_auc_macro, kappa, f1_macro, itr_bits_per_minute, n_trials_test). Scripts and web backend use this to build Table_1, Table_2.
 
-  Comparison: bci_framework/utils/table_comparison.py — compare_tables, compare_tables_multi_metric (paired t-test, Wilcoxon).
+  Comparison: bci_framework/utils/table_comparison.py — compare_tables, compare_tables_multi_metric (permutation test, paired t-test, Wilcoxon). MLstatkit: DeLong (delong_test_auc), bootstrap CIs (bootstrap_metric_ci), AUC to odds ratio (auc_to_odds_ratio).
 
   Runner: bci_framework/evaluation/multi_subject_runner.py — run_table_for_config (LOSO per subject), run_ab_comparison (Table_A + Table_B + comparison).
 
@@ -134,13 +134,13 @@ EEG Agent/
 
 6. Installation and Quick Run
 
-  cd "EEG Agent"
-  python -m venv venv
+cd "EEG Agent"
+python -m venv venv
   source venv/bin/activate   (Windows: venv\Scripts\activate)
-  pip install -r requirements.txt
+pip install -r requirements.txt
 
   Default: calibration + live stream + desktop GUI
-  PYTHONPATH=. python main.py --subject 1
+PYTHONPATH=. python main.py --subject 1
 
   Web UI (browser)
   PYTHONPATH=. python main.py --subject 1 --web
@@ -192,7 +192,7 @@ Purpose: Two pipelines on the same subjects, Table_A, Table_B, and statistical c
 
   1. Set Dataset (e.g. BNCI2014_001) and Subjects (e.g. 1 2 3).
   2. Configure Pipeline A and Pipeline B via Simple dropdowns (Feature, Classifier, Spatial) or Advanced (config paths, Override for B JSON).
-  3. Click Run comparison — backend runs LOSO for A and B on the same subjects, builds Table_A and Table_B, runs paired t-test or Wilcoxon.
+  3. Click Run comparison — backend runs LOSO for A and B on the same subjects, builds Table_A and Table_B, runs the selected test (permutation, t-test, or Wilcoxon).
   4. Page shows Table A, Table B, and Comparison table: per metric — Mean A, Mean B, Delta, p-value, Significant (α=0.05).
 
 Tip: "Copy A to B", then change one dropdown for B (e.g. Classifier B = SVM) to compare "same pipeline, different classifier."
@@ -205,7 +205,7 @@ Dropdown options (Compare page)
 
   Spatial: laplacian_auto, car.
 
-  Test: Paired t-test (parametric) or Wilcoxon signed-rank (non-parametric).
+  Test: Permutation (recommended; distribution-free), Paired t-test (parametric), or Wilcoxon signed-rank (non-parametric).
 
 Advanced (Compare page)
 
@@ -234,7 +234,7 @@ Quick reference (Web UI)
 
   Same for Pipeline B — Table B (same subject IDs).
 
-  Comparison: For each metric, align by subject_id, run paired t-test or Wilcoxon — p-value, mean A, mean B, delta, significant (Yes/No at α=0.05). Displayed in the same page.
+  Comparison: For each metric, align by subject_id, run selected test (permutation, t-test, or Wilcoxon) — p-value, mean A, mean B, delta, significant (Yes/No at α=0.05). Displayed in the same page.
 
 
 9. Configuration (config.yaml)
@@ -318,7 +318,7 @@ Per pipeline under results/experiment_id/pipeline_name/: raw EEG plot, filtered 
 
   Subject-level tables (Table_1, Table_2): Compare page shows Table A, Table B (subjects × metrics). Backend: run_table_for_config, LOSO per subject, build_subject_table; one row per subject; metrics = accuracy, balanced_accuracy, roc_auc_macro, kappa, f1_macro, itr_bits_per_minute, n_trials_test.
 
-  Statistical comparison (p-values): Compare page: Mean A, Mean B, Delta, p-value, Significant. Backend: compare_tables_multi_metric (paired t-test, Wilcoxon); same subjects in both tables.
+  Statistical comparison (p-values): Compare page: Mean A, Mean B, Delta, p-value, Significant. Backend: compare_tables_multi_metric (permutation test, t-test, Wilcoxon); same subjects in both tables. AUC curves: DeLong test (MLstatkit) available via delong_test_auc when you have prediction scores for the same test set from both pipelines.
 
   Web A vs B with same params, change one: Dropdowns Pipeline A and B; "Copy A to B"; change one (e.g. classifier). Backend: run_ab_comparison with pipeline_a / pipeline_b dicts (feature, classifier, spatial) or config paths / override_b.
 

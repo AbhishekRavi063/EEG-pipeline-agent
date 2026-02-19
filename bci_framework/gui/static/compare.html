@@ -201,6 +201,21 @@
     .comparison-table td.ns { color: #6b7280; }
 
     .no-data { color: #6b7280; font-size: 0.9rem; padding: 12px 0; }
+
+    .dataset-meta-panel {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      font-size: 0.9rem;
+      color: #475569;
+    }
+    .dataset-meta-panel strong { color: #1e293b; }
+    .subject-select-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 8px; }
+    .subject-checkboxes { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+    .subject-checkboxes label { display: inline-flex; align-items: center; gap: 6px; margin: 0; cursor: pointer; font-weight: normal; }
+    .subject-count-select { width: auto; max-width: 120px; margin-left: 8px; }
   </style>
 </head>
 <body>
@@ -208,15 +223,35 @@
     <h1>Pipeline A vs B — Statistical Comparison</h1>
     <div class="nav"><a href="/">← Live EEG</a></div>
 
+    <div id="datasetMetaPanel" class="dataset-meta-panel" style="display: none;">
+      <strong>Dataset (from Live app)</strong>: <span id="datasetMetaText"></span>
+      <div style="margin-top: 8px;"><button type="button" id="loadFromAppBtn" class="btn-secondary">Refresh from Live app</button></div>
+    </div>
+
     <div class="panel panel--form">
       <h2>Settings (same subjects for both pipelines)</h2>
       <div class="row">
         <label>Dataset (MOABB name)</label>
         <input type="text" id="dataset" value="BNCI2014_001" placeholder="BNCI2014_001">
       </div>
-      <div class="row">
-        <label>Subjects (space or comma separated)</label>
-        <input type="text" id="subjects" value="1 2 3" placeholder="1 2 3">
+      <div class="row" id="subjectSelectionRow">
+        <label>Subjects to compare</label>
+        <div id="subjectCheckboxArea" style="display: none;">
+          <div class="subject-select-row">
+            <span style="font-size: 0.85rem; color: #6b7280;">Select number of subjects:</span>
+            <select id="subjectCountSelect" class="subject-count-select">
+              <option value="3">First 3</option>
+              <option value="5">First 5</option>
+              <option value="9">First 9</option>
+              <option value="all">All</option>
+            </select>
+          </div>
+          <div id="subjectCheckboxes" class="subject-checkboxes"></div>
+        </div>
+        <div id="subjectTextFallback">
+          <label style="margin-top: 8px;">Subjects (space or comma separated)</label>
+          <input type="text" id="subjects" value="1 2 3" placeholder="1 2 3">
+        </div>
       </div>
 
       <h3>Simple: change one option (Pipeline A vs B)</h3>
@@ -304,6 +339,7 @@
       <div class="row">
         <label>Test</label>
         <select id="test">
+          <option value="permutation">Permutation (recommended)</option>
           <option value="ttest">Paired t-test</option>
           <option value="wilcoxon">Wilcoxon signed-rank</option>
         </select>
@@ -329,6 +365,88 @@
       return str.replace(/,/g, ' ').trim().split(/\s+/).filter(Boolean).map(s => parseInt(s, 10)).filter(n => !isNaN(n));
     }
 
+    let availableSubjectsList = [];
+
+    function buildSubjectCheckboxes(subjects) {
+      availableSubjectsList = subjects.map(s => Number(s));
+      const container = document.getElementById('subjectCheckboxes');
+      container.innerHTML = '';
+      subjects.forEach(function(s) {
+        const id = 'subj_' + s;
+        const label = document.createElement('label');
+        label.htmlFor = id;
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.id = id;
+        cb.value = String(s);
+        cb.className = 'subject-cb';
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(' ' + s));
+        container.appendChild(label);
+      });
+      const countSel = document.getElementById('subjectCountSelect');
+      countSel.onchange = applySubjectCount;
+      applySubjectCount();
+    }
+
+    function applySubjectCount() {
+      const n = document.getElementById('subjectCountSelect').value;
+      const checkboxes = document.querySelectorAll('.subject-cb');
+      if (n === 'all') {
+        checkboxes.forEach(function(cb) { cb.checked = true; });
+      } else {
+        const k = parseInt(n, 10);
+        checkboxes.forEach(function(cb, i) { cb.checked = i < k; });
+      }
+    }
+
+    function getSelectedSubjectIds() {
+      const area = document.getElementById('subjectCheckboxArea');
+      if (area.style.display !== 'none' && availableSubjectsList.length) {
+        const checked = document.querySelectorAll('.subject-cb:checked');
+        return Array.from(checked).map(function(cb) { return parseInt(cb.value, 10); }).sort(function(a, b) { return a - b; });
+      }
+      return parseSubjects(document.getElementById('subjects').value) || [1, 2, 3];
+    }
+
+    async function loadDatasetInfo() {
+      try {
+        const res = await fetch('/api/dataset_info');
+        const info = await res.json();
+        const metaPanel = document.getElementById('datasetMetaPanel');
+        const metaText = document.getElementById('datasetMetaText');
+        const parts = [];
+        if (info.dataset_source) {
+          document.getElementById('dataset').value = info.dataset_source;
+          parts.push(info.dataset_source);
+        }
+        if (info.n_channels != null) parts.push(info.n_channels + ' ch');
+        if (info.fs) parts.push(info.fs + ' Hz');
+        if (info.window_seconds != null) parts.push(info.window_seconds.toFixed(1) + ' s');
+        if (info.available_subjects && info.available_subjects.length) {
+          parts.push('Subjects: ' + info.available_subjects.join(', '));
+          metaPanel.style.display = 'block';
+          metaText.textContent = parts.join(' | ');
+          document.getElementById('subjectCheckboxArea').style.display = 'block';
+          document.getElementById('subjectTextFallback').style.display = 'none';
+          buildSubjectCheckboxes(info.available_subjects);
+          return;
+        }
+        if (parts.length) {
+          metaPanel.style.display = 'block';
+          metaText.textContent = parts.join(' | ');
+        }
+        document.getElementById('subjectCheckboxArea').style.display = 'none';
+        document.getElementById('subjectTextFallback').style.display = 'block';
+      } catch (e) {
+        document.getElementById('subjectCheckboxArea').style.display = 'none';
+        document.getElementById('subjectTextFallback').style.display = 'block';
+      }
+    }
+
+    document.getElementById('loadFromAppBtn').addEventListener('click', loadDatasetInfo);
+    loadDatasetInfo();
+
     document.getElementById('copyAtoB').addEventListener('click', () => {
       document.getElementById('featureB').value = document.getElementById('featureA').value;
       document.getElementById('classifierB').value = document.getElementById('classifierA').value;
@@ -337,7 +455,11 @@
 
     runBtn.addEventListener('click', async () => {
       const dataset = document.getElementById('dataset').value.trim() || 'BNCI2014_001';
-      const subjects = parseSubjects(document.getElementById('subjects').value) || [1, 2, 3];
+      const subjects = getSelectedSubjectIds();
+      if (!subjects.length) {
+        setStatus('Select at least one subject.', true);
+        return;
+      }
       const configPathA = document.getElementById('configA').value.trim() || null;
       const configPathB = document.getElementById('configB').value.trim() || null;
       const overrideStr = document.getElementById('overrideB').value.trim();

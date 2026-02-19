@@ -14,7 +14,13 @@ from .subject_table import (
     load_table_json,
     TABLE_METRIC_COLUMNS,
 )
-from .table_comparison import compare_tables, compare_tables_multi_metric
+from .table_comparison import (
+    compare_tables,
+    compare_tables_multi_metric,
+    delong_test_auc,
+    bootstrap_metric_ci,
+    auc_to_odds_ratio,
+)
 
 __all__ = [
     "load_config",
@@ -46,4 +52,7 @@ __all__ = [
     "TABLE_METRIC_COLUMNS",
     "compare_tables",
     "compare_tables_multi_metric",
+    "delong_test_auc",
+    "bootstrap_metric_ci",
+    "auc_to_odds_ratio",
 ]
