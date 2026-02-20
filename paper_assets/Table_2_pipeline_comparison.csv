@@ -1,0 +1,8 @@
+metric,mean_A,mean_B,mean_delta,p_value_permutation,cohens_d,significant_05
+accuracy,0.339109,0.322882,-0.016227,0.39696,-0.315476,False
+balanced_accuracy,0.339109,0.322882,-0.016227,0.39696,-0.315476,False
+roc_auc_macro,0.618694,0.628675,0.009981,0.70413,0.136747,False
+kappa,0.118812,0.097176,-0.021635,0.393461,-0.315476,False
+f1_macro,0.260056,0.243582,-0.016475,0.462154,-0.274142,False
+itr_bits_per_minute,1.014611,1.093721,0.07911,0.848315,0.067501,False
+n_trials_test,404.0,404.0,0.0,1.0,0.0,False

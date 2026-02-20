@@ -114,7 +114,7 @@ EEG Agent/
     gui/ — app.py (desktop), web_server.py, static/index.html, compare.html
     evaluation/ — multi_subject_runner (LOSO, run_ab_comparison)
     utils/ — config_loader, splits, metrics, subject_table, table_comparison
-  scripts/ — run_multi_subject_tables, explore_pipeline_comparisons, benchmark_v1_v2_moabb, run_web_interface, download_bci_iv_2a.sh
+  scripts/ — run_v1_paper_results, run_research_experiment, run_multi_subject_tables, explore_pipeline_comparisons, benchmark_v1_v2_moabb, run_web_interface, download_bci_iv_2a.sh
   tests/
   examples/ — run_offline.py, run_online.py, notebooks
   results/ — experiment_id/pipeline_name/ (plots, metrics.json)
@@ -289,9 +289,15 @@ When transfer.enabled is true (e.g. LOSO): adapter fits on source features + unl
 
 13. Scripts (Summary)
 
+  run_v1_paper_results.py — **v1 paper pipeline:** 9-subject LOSO benchmark (5 baselines + AutoML) + EA+Tangent_LR, final table, leakage tests, freeze. Use for paper numbers. (~45–60 min full run.)
+
+  run_research_experiment.py — LOSO baselines + AutoML, subject-level tables, ablation, comparison (AutoML vs best baseline), metadata.
+
   run_multi_subject_tables.py — Build Table_1 (and Table_2) over subjects (LOSO); optional comparison report (Table_1 vs Table_2, p-values).
 
   explore_pipeline_comparisons.py — Multiple configs, tables, pairwise comparison.
+
+  test_mlstatkit_impl.py — Quick check: DeLong, bootstrap CI, AUC2OR (MLstatkit); permutation test. PYTHONPATH=. python scripts/test_mlstatkit_impl.py
 
   benchmark_v1_v2_moabb.py — v1/v2/v3 on MOABB; optional --loso, --transfer-method.
 
@@ -299,8 +305,52 @@ When transfer.enabled is true (e.g. LOSO): adapter fits on source features + unl
 
   download_bci_iv_2a.sh — Download BCI IV 2a GDF files.
 
+  examples/ — run_offline.py, run_online.py, bci_automl_minimal_example.ipynb (run with PYTHONPATH=. or PYTHONPATH=.. from examples/).
 
-14. Adding New Methods (Modularity)
+
+14. v1 Paper Results (9-subject LOSO)
+
+  **Purpose:** One clean, reproducible benchmark for the paper. No tuning based on LOSO; seed 42; strict LOSO only.
+
+  **Run (paper numbers):**  
+  `PYTHONPATH=. python scripts/run_v1_paper_results.py --out-dir results`  
+  (Default: BNCI2014_001, subjects 1–9. Allow ~45–60 min.)
+
+  **What it does:** (1) **v1_clean_benchmark** — CSP_LDA, Riemann_MDM, Tangent_LR, FilterBankRiemann, EEGNet, AutoML. (2) **v1_ea_alignment** — Euclidean Alignment + tangent + LR (fixed C grid). (3) Final 7-method table (CSV, LaTeX, JSON). (4) Leakage tests. (5) Freeze note. Results: `results/v1_clean_benchmark/`, `results/v1_ea_alignment/`, `results/v1_final_paper_tables/`.
+
+  **9-subject headline (frozen):** Best method = FilterBankRiemann (40.54% ± 7.24%). AutoML 33.99%; Δ vs best = −6.55 pp (p = 0.016). EA_Tangent_LR 31.99%; Δ vs Riemann_MDM = −3.41 pp (EA did not help—publishable finding). Only 9-subject numbers are paper numbers; 3-subject is smoke test only.
+
+  **Euclidean Alignment:** Implemented in `bci_framework/features/euclidean_alignment.py` (EARiemannTangentOAS). Alignment uses only source subjects; assertion in fit() and test_ea_alignment_target_not_in_fit in tests/test_leakage_guard.py.
+
+15. Statistical Significance (p-values)
+
+  **Primary:** **Paired permutation test** (distribution-free). For two pipelines A and B with subject-level tables: align by subject_id, statistic = mean(B − A), null = random sign of (B−A) per subject. Default 10,000 permutations; two-sided p-value. Used in research experiment, v1 paper, and Compare UI. Implemented in `bci_framework/utils/table_comparison.py` — `compare_tables(..., test="permutation")`, `compare_tables_multi_metric_research()`.
+
+  **Also:** Wilcoxon signed-rank, paired t-test; Cohen's d; bootstrap 95% CI for mean difference (research comparison).
+
+  **DeLong test (AUC curves):** Compare two AUCs when both pipelines are evaluated on the **same test set** with prediction probabilities. Implemented in `table_comparison.delong_test_auc()` (uses MLstatkit: `pip install MLstatkit`). Not auto-run in the pipeline comparison report (report uses subject-level metrics and permutation). Use when you have y_true, prob_a, prob_b for the same trials. Test: `PYTHONPATH=. python scripts/test_mlstatkit_impl.py`.
+
+16. Research Readiness & Key Results
+
+  **Leakage:** `pytest tests/test_leakage_guard.py -v` — 12 tests (no overlap, LOSO isolated, cross-session, no fit on full dataset, EA target-not-in-fit). All pass.
+
+  **Reproducibility:** Same seed (42) → identical subject-level results. metadata.json: dataset, seed, config_hash, git_commit, timestamp.
+
+  **Within-subject (pipeline sanity):** Subject 1, 5-fold CV, CSP+LDA: ~74% (above chance 25%). LOSO 9-subject: best baseline FilterBankRiemann ~40.5%; AutoML ~34%; evaluation rigor and leakage-safe design are the main contribution.
+
+17. Paper / Publication
+
+  **Title options:** (A) *An AutoML Framework for Motor Imagery Brain–Computer Interfaces: Configurable Pipelines, Cross-Validation-Based Selection, and Reproducible Pipeline Comparison.* (B) *BCI AutoML: A Modular, Research-Grade Framework for Motor Imagery EEG with Automated Pipeline Selection and Statistical Pipeline Comparison.*
+
+  **Abstract template:** Background (MI-BCI pipeline choice); Methods (modular config-driven framework, preprocessing→spatial→features→optional DA→classifier, AutoML agent, LOSO, permutation/Wilcoxon/t-test, DeLong for AUC); Results [insert your 9-subject v1 numbers]; Conclusions (reproducible, leakage-free, subject-level tables, statistical comparison). Keywords: BCI, motor imagery, EEG, AutoML, LOSO, domain adaptation, Riemannian, statistical comparison.
+
+  **Contribution (methodological):** Leakage-safe LOSO; subject-level tables; paired permutation-based pipeline comparison (same subjects, aligned IDs, Cohen's d, bootstrap CI); reproducible one-command runs with metadata. We do not claim new CSP/Riemannian/deep algorithms; we claim **statistically valid, subject-aligned comparison under strict leakage control.**
+
+18. Performance Diagnosis (CSP)
+
+  **Issue (resolved):** Early LOSO ≈ chance (25%) because CSP was **binary-only** (first two classes). Framework now uses **multiclass CSP** (MNE) for 4-class MI; within-subject ~74%, LOSO baselines 30–40%. MI window: tmin=0, tmax=4 s relative to cue (MI_WINDOW_PRIMARY in test_loso_transfer_validation.py). Diagnostic script: `PYTHONPATH=. python scripts/diagnose_within_subject_csp_lda.py --dataset BNCI2014_001 --subject 1`.
+
+19. Adding New Methods (Modularity)
 
   Dataset: Implement DatasetLoader in datasets/, register in datasets/__init__.py.
 
@@ -309,12 +359,12 @@ When transfer.enabled is true (e.g. LOSO): adapter fits on source features + unl
   Preprocessing: Add class in preprocessing/, register in manager. New pipelines are picked up when auto_generate is true or via explicit in config.
 
 
-15. Snapshot Logging
+20. Snapshot Logging
 
 Per pipeline under results/experiment_id/pipeline_name/: raw EEG plot, filtered EEG plot, metrics.json (accuracy, kappa, latency, transfer info, spatial_filter_used, etc.). When adaptive pruning is used: adaptive_pruning block (quick_screening, runtime_stats, early_stopped_pipelines, correlation_with_full_cv). Optional model checkpoints (.pkl).
 
 
-16. Cross-Check: Features from UI to Backend
+21. Cross-Check: Features from UI to Backend
 
   Subject-level tables (Table_1, Table_2): Compare page shows Table A, Table B (subjects × metrics). Backend: run_table_for_config, LOSO per subject, build_subject_table; one row per subject; metrics = accuracy, balanced_accuracy, roc_auc_macro, kappa, f1_macro, itr_bits_per_minute, n_trials_test.
 
@@ -333,6 +383,6 @@ Per pipeline under results/experiment_id/pipeline_name/: raw EEG plot, filtered 
   Memory: Compare runs LOSO per subject; tables built incrementally. Backend: Data loaded once for requested subjects; per-holdout fold runs; tables = list of dicts (one row per subject).
 
 
-17. License
+22. License
 
 Use and extend for research and product development as needed. Publish code with the paper as suggested in the professor's workflow.

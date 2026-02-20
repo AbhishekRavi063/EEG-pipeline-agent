@@ -19,7 +19,8 @@ _MLFLOW_ACTIVE = False
 
 
 def set_seed(seed: int = 42) -> None:
-    """Set global seeds for numpy, random, and optional PyTorch."""
+    """Set global seeds for numpy, random, and optional PyTorch (full reproducibility).
+    sklearn uses np.random when random_state is not passed; use experiment.seed in config for estimators."""
     np.random.seed(seed)
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -86,3 +87,68 @@ def enable_mlflow(
         logger.info("MLflow tracking enabled")
     except ImportError:
         logger.warning("MLflow not installed; install with pip install mlflow")
+
+
+def _config_hash(config: dict[str, Any]) -> str:
+    """Stable hash of config (keys + repr of values) for reproducibility."""
+    import hashlib
+    import json
+    try:
+        blob = json.dumps(config, sort_keys=True, default=repr)
+    except Exception:
+        blob = repr(sorted(config.items()))
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def _git_commit() -> str | None:
+    """Current git commit hash if in a repo."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            cwd=Path(__file__).resolve().parents[2],
+        )
+        if out.returncode == 0 and out.stdout:
+            return out.stdout.strip()[:12]
+    except Exception:
+        pass
+    return None
+
+
+def build_research_metadata(
+    dataset: str,
+    evaluation_mode: str = "loso",
+    seed: int | None = None,
+    config: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Build metadata for reproducibility: dataset, LOSO, seed, config hash, git commit, timestamp.
+    Save as metadata.json alongside results.
+    """
+    from datetime import datetime, timezone
+    meta: dict[str, Any] = {
+        "dataset": dataset,
+        "evaluation_mode": evaluation_mode,
+        "seed": seed,
+        "config_hash": _config_hash(config) if config else None,
+        "git_commit": _git_commit(),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "experiment_id": get_experiment_id(),
+    }
+    if extra:
+        meta["extra"] = extra
+    return meta
+
+
+def save_metadata(metadata: dict[str, Any], path: str | Path) -> None:
+    """Write metadata.json to path (e.g. results/<experiment_id>/metadata.json)."""
+    import json
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+    logger.info("Saved metadata: %s", path)

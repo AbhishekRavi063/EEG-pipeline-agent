@@ -73,6 +73,33 @@ def get_default_loso_config() -> dict:
     return cfg
 
 
+def get_automl_loso_config(fast: bool = False) -> dict:
+    """
+    Config for AutoML LOSO: agent selects best pipeline per fold from multiple options.
+    Same LOSO conditions as baselines; pipelines auto-generated (capped).
+    If fast=True: fewer pipelines (4), fewer calibration trials (50), 2-fold CV (~2–3× faster).
+    """
+    cfg = get_default_loso_config()
+    cfg = copy.deepcopy(cfg)
+    if fast:
+        cfg["pipelines"] = {
+            "auto_generate": True,
+            "max_combinations": 4,
+            "explicit": [],
+        }
+        cfg["agent"]["calibration_trials"] = 50
+        cfg["agent"]["cv_folds"] = 2
+        cfg["agent"]["prune_thresholds"] = {"min_accuracy": 0.0, "max_latency_ms": 500}
+    else:
+        cfg["pipelines"] = {
+            "auto_generate": True,
+            "max_combinations": 8,
+            "explicit": [],
+        }
+        cfg["agent"]["prune_thresholds"] = {"min_accuracy": 0.0, "max_latency_ms": 500}
+    return cfg
+
+
 def config_from_preset(feature: str, classifier: str, spatial: str) -> dict:
     """Build config from preset (feature, classifier, spatial) for dropdown-driven comparison."""
     cfg = get_default_loso_config()
@@ -83,6 +110,10 @@ def config_from_preset(feature: str, classifier: str, spatial: str) -> dict:
         "explicit": [[feature, classifier]],
     }
     cfg["spatial_filter"] = {"enabled": True, "method": spatial, "auto_select": False}
+    # CSP_LDA: more components for cross-subject (paper target 38-45%)
+    if feature == "csp" and classifier == "lda":
+        cfg.setdefault("features", {}).setdefault("csp", {})
+        cfg["features"]["csp"]["n_components"] = 8
     return cfg
 
 
@@ -214,3 +245,103 @@ def run_ab_comparison(
         "name_a": name_a,
         "name_b": name_b,
     }
+
+
+# Fixed baselines for research comparison (identical LOSO conditions)
+# Riemann_MDM: MDM expects flattened covariances, not tangent space -> use "covariance" feature
+# Tangent_LR: OAS cov -> tangent space -> StandardScaler -> LogisticRegression (C tuned inner CV)
+# FilterBankRiemann: 5 bands (4-8..24-32 Hz), OAS cov, tangent concat, scale, LR
+BASELINE_PRESETS = {
+    "CSP_LDA": {"feature": "csp", "classifier": "lda", "spatial": "laplacian_auto"},
+    "Riemann_MDM": {"feature": "covariance", "classifier": "mdm", "spatial": "laplacian_auto"},
+    "Tangent_LR": {"feature": "riemann_tangent_oas", "classifier": "logistic_regression", "spatial": "laplacian_auto"},
+    "FilterBankRiemann": {"feature": "filter_bank_riemann", "classifier": "logistic_regression", "spatial": "laplacian_auto"},
+    "EEGNet": {"feature": "raw", "classifier": "eegnet", "spatial": "car"},
+}
+
+
+def get_baseline_config(name: str, fast: bool = False) -> dict:
+    """Get config for a fixed baseline (CSP_LDA, Riemann_MDM, Tangent_LR, FilterBankRiemann, EEGNet)."""
+    preset = BASELINE_PRESETS.get(name)
+    if not preset:
+        raise KeyError("Unknown baseline %r. Use one of %s" % (name, list(BASELINE_PRESETS)))
+    cfg = config_from_preset(
+        preset["feature"],
+        preset["classifier"],
+        preset["spatial"],
+    )
+    # Tangent_LR: C grid including 100 and 1000 (paper target 38-42%)
+    if name == "Tangent_LR":
+        cfg.setdefault("classifiers", {})
+        cfg["classifiers"].setdefault("logistic_regression", {})
+        cfg["classifiers"]["logistic_regression"]["C_grid"] = [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
+        cfg["classifiers"]["logistic_regression"]["tune_C"] = True
+        cfg["classifiers"]["logistic_regression"]["cv_folds"] = 3
+        cfg.setdefault("features", {})
+        cfg["features"].setdefault("riemann_tangent_oas", {})
+        cfg["features"]["riemann_tangent_oas"]["z_score_tangent"] = True
+    # FilterBankRiemann: bands 4-8, 8-12, 12-16, 16-24, 24-32 Hz; OAS; RSA for cross-subject (paper target 40-45%)
+    if name == "FilterBankRiemann":
+        cfg.setdefault("features", {})
+        cfg["features"].setdefault("filter_bank_riemann", {})
+        cfg["features"]["filter_bank_riemann"]["bands"] = [(4, 8), (8, 12), (12, 16), (16, 24), (24, 32)]
+        cfg["features"]["filter_bank_riemann"]["use_oas"] = True
+        cfg["features"]["filter_bank_riemann"]["z_score_tangent"] = True
+        cfg["features"]["filter_bank_riemann"]["rsa"] = True  # cross-subject alignment (subject_ids passed in LOSO)
+        cfg["features"]["filter_bank_riemann"]["rsa_stable_mode"] = False
+        cfg.setdefault("classifiers", {})
+        cfg["classifiers"].setdefault("logistic_regression", {})
+        cfg["classifiers"]["logistic_regression"]["C_grid"] = [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
+        cfg["classifiers"]["logistic_regression"]["tune_C"] = True
+        cfg["classifiers"]["logistic_regression"]["cv_folds"] = 3
+    # EEGNet (non-fast): 200 epochs, dropout 0.4 for paper target ≥35%
+    if name == "EEGNet":
+        cfg.setdefault("classifiers", {}).setdefault("eegnet", {})
+        if not fast:
+            cfg["classifiers"]["eegnet"]["epochs"] = 200
+            cfg["classifiers"]["eegnet"]["dropout"] = 0.4
+    if fast and name == "EEGNet":
+        cfg.setdefault("classifiers", {}).setdefault("eegnet", {})
+        cfg["classifiers"]["eegnet"]["epochs"] = 60
+        cfg["classifiers"]["eegnet"]["early_stopping_patience"] = 10
+    return cfg
+
+
+# Fixed C grid for v1 paper (no tuning based on LOSO)
+EA_TANGENT_LR_C_GRID = [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
+
+
+def get_ea_tangent_lr_config() -> dict:
+    """Config for EA + Tangent_LR (v1 paper: Euclidean Alignment then OAS cov, tangent, LR with fixed C grid)."""
+    cfg = config_from_preset(
+        "ea_riemann_tangent_oas",
+        "logistic_regression",
+        "laplacian_auto",
+    )
+    cfg.setdefault("features", {}).setdefault("ea_riemann_tangent_oas", {})
+    cfg["features"]["ea_riemann_tangent_oas"]["z_score_tangent"] = True
+    cfg.setdefault("classifiers", {}).setdefault("logistic_regression", {})
+    cfg["classifiers"]["logistic_regression"]["C_grid"] = EA_TANGENT_LR_C_GRID
+    cfg["classifiers"]["logistic_regression"]["tune_C"] = True
+    cfg["classifiers"]["logistic_regression"]["cv_folds"] = 3
+    return cfg
+
+
+def run_baselines_loso(
+    dataset: str,
+    subjects: list[int],
+    baselines: list[str] | None = None,
+    fast: bool = False,
+) -> dict[str, list[dict]]:
+    """
+    Run fixed baselines (CSP+LDA, Riemann+MDM, etc.) under identical LOSO conditions.
+    Returns {baseline_name: list[dict]} where each list is subject-level rows (same format as run_table_for_config).
+    If fast=True, EEGNet uses fewer epochs (60) and earlier stopping.
+    """
+    baselines = baselines or list(BASELINE_PRESETS)
+    out: dict[str, list[dict]] = {}
+    for name in baselines:
+        cfg = get_baseline_config(name, fast=fast)
+        rows = run_table_for_config(cfg, dataset, subjects, pipeline_name=name)
+        out[name] = rows
+    return out

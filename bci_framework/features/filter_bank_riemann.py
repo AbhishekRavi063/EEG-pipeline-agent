@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 
 from .base import FeatureExtractorBase
-from .riemann_tangent_oas import _bandpass_eeg
+from .riemann_tangent_oas import _bandpass_eeg, compute_covariances_oas
 
 logger = logging.getLogger(__name__)
 
@@ -336,12 +336,16 @@ class FilterBankRiemann(FeatureExtractorBase):
         use_outlier_detection: bool = False,
         rsa_stable_mode: bool = False,
         use_class_conditional_rsa: bool = False,
+        use_oas: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(fs, **kwargs)
         self.rsa_stable_mode = bool(rsa_stable_mode)
         self.use_class_conditional_rsa = bool(use_class_conditional_rsa)
-        self.bands = bands or FILTER_BANK_BANDS
+        self.use_oas = bool(use_oas)
+        # Accept list of lists from YAML (e.g. [[4,8],[8,12],...])
+        raw_bands = bands or FILTER_BANK_BANDS
+        self.bands = [tuple(b) if isinstance(b, (list, tuple)) else b for b in raw_bands]
         self.force_float32 = bool(force_float32)
         self.z_score_tangent = bool(z_score_tangent)
         self.rsa = bool(rsa)
@@ -415,7 +419,10 @@ class FilterBankRiemann(FeatureExtractorBase):
         for (l_freq, h_freq) in self.bands:
             X_band = _bandpass_eeg(X.astype(np.float64), self.fs, l_freq, h_freq)
             X_band = X_band.astype(np.float32)
-            covs = compute_covariances_band(X_band)
+            if self.use_oas:
+                covs = compute_covariances_oas(X_band.astype(np.float64)).astype(np.float32)
+            else:
+                covs = compute_covariances_band(X_band)
 
             if use_rsa:
                 # Optional: Class-Conditional RSA (source labels only; target stays unsupervised)
@@ -706,7 +713,10 @@ class FilterBankRiemann(FeatureExtractorBase):
         for (l_freq, h_freq), ref in zip(self.bands, self._ref_covs):
             X_band = _bandpass_eeg(X.astype(np.float64), self.fs, l_freq, h_freq)
             X_band = X_band.astype(np.float32)
-            covs = compute_covariances_band(X_band)
+            if self.use_oas:
+                covs = compute_covariances_oas(X_band.astype(np.float64)).astype(np.float32)
+            else:
+                covs = compute_covariances_band(X_band)
             if self.rsa:
                 # Target subject whitening (unsupervised): whiten to geometric mean of target covs
                 target_mean = geometric_mean_covariances(covs)

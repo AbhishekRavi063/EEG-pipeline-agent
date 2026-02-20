@@ -91,6 +91,8 @@ class MDMClassifier(ClassifierBase):
     ) -> "MDMClassifier":
         X = np.asarray(X, dtype=np.float64)
         y = np.asarray(y, dtype=np.int64).ravel()
+        assert not np.any(np.isnan(X)), "MDM fit: NaN in features"
+        assert X.ndim == 2, "MDM fit: X must be (n_trials, n_features)"
         n_flat = X.shape[1]
         n = int(round((-1 + (1 + 8 * n_flat) ** 0.5) / 2))
         if n * (n + 1) // 2 != n_flat:
@@ -98,6 +100,16 @@ class MDMClassifier(ClassifierBase):
                 f"MDM expects flattened upper triangle: n_flat = n*(n+1)/2; got {n_flat}"
             )
         self._n_channels = n
+        uniq = np.unique(y)
+        logger.info(
+            "[MDM] fit: n_trials=%d, n_features=%d, n_channels=%d, unique_labels=%s (n_classes=%d)",
+            X.shape[0], n_flat, n, uniq.tolist(), self.n_classes,
+        )
+        assert len(uniq) >= 2, (
+            f"MDM fit: need at least 2 classes in train; got {len(uniq)}: {uniq.tolist()}"
+        )
+        if len(uniq) < self.n_classes:
+            logger.warning("MDM fit: train has %d classes (expected %d); missing classes get identity centroid", len(uniq), self.n_classes)
 
         try:
             from pyriemann.utils.mean import mean_riemann
@@ -111,10 +123,15 @@ class MDMClassifier(ClassifierBase):
         for k in range(self.n_classes):
             mask = y == k
             if not np.any(mask):
-                # No sample for this class: use identity
+                logger.warning("MDM: no sample for class %d; using identity centroid", k)
                 self._centroids.append(np.eye(n, dtype=np.float64))
                 continue
             covs = np.array([self._flat_to_cov(X[i]) for i in np.where(mask)[0]])
+            for i, C in enumerate(covs):
+                C_sym = (C + C.T) / 2.0
+                evals = np.linalg.eigvalsh(C_sym)
+                if np.any(evals <= 0):
+                    covs[i] = C_sym + (1e-5 - np.min(evals)) * np.eye(n)
             self._centroids.append(mean_fun(covs))
 
         return self

@@ -1,0 +1,23 @@
+{
+  "dataset": "BNCI2014_001",
+  "evaluation_mode": "loso",
+  "seed": 42,
+  "config_hash": "09a8be0fbe49ac29",
+  "git_commit": "0e4fdb61553b",
+  "timestamp_utc": "2026-02-20T07:32:27.635533+00:00",
+  "experiment_id": "20260220_072810_d3419beb",
+  "extra": {
+    "subjects": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "experiment_id": "20260220_072810_d3419beb"
+  }
+}

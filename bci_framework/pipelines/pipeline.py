@@ -94,10 +94,12 @@ class Pipeline:
         X_target: np.ndarray | None = None,
         sample_weight: np.ndarray | None = None,
         subject_ids: np.ndarray | None = None,
+        loso_target_subject: int | None = None,
     ) -> "Pipeline":
         """Fit: Preprocessing -> Feature extraction -> Domain adaptation (2D only) -> Classifier.
         When transfer is enabled, X_target (unlabeled target data) is required; the adapter
         is fitted on source + target features and the classifier is always fitted on adapted source.
+        loso_target_subject: for LOSO; passed to features that need it (e.g. EA) to assert no leakage.
         """
         if self._transfer_enabled and (X_target is None or len(X_target) == 0):
             raise ValueError(
@@ -108,6 +110,12 @@ class Pipeline:
         fe = self.feature_extractor
         if getattr(fe, "rsa", False) and subject_ids is not None and len(subject_ids) == len(X_pre):
             fe.fit(X_pre, y, subject_ids=subject_ids)
+        elif getattr(fe, "name", None) == "ea_riemann_tangent_oas":
+            fe.fit(
+                X_pre, y,
+                subject_ids=subject_ids,
+                loso_target_subject=loso_target_subject,
+            )
         else:
             fe.fit(X_pre, y)
         X_feat = self.feature_extractor.transform(X_pre)

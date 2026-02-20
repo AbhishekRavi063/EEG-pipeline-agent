@@ -10,6 +10,7 @@ from .riemann_tangent_oas import RiemannTangentOAS
 from .filter_bank_riemann import FilterBankRiemann
 from .deep import DeepFeatureExtractor
 from .raw import RawFeatures
+from .euclidean_alignment import EARiemannTangentOAS
 
 FEATURE_REGISTRY: dict[str, type[FeatureExtractorBase]] = {
     "csp": CSPFeatures,
@@ -21,6 +22,7 @@ FEATURE_REGISTRY: dict[str, type[FeatureExtractorBase]] = {
     "filter_bank_riemann": FilterBankRiemann,
     "deep": DeepFeatureExtractor,
     "raw": RawFeatures,
+    "ea_riemann_tangent_oas": EARiemannTangentOAS,
 }
 
 __all__ = [
@@ -34,5 +36,6 @@ __all__ = [
     "FilterBankRiemann",
     "DeepFeatureExtractor",
     "RawFeatures",
+    "EARiemannTangentOAS",
     "FEATURE_REGISTRY",
 ]

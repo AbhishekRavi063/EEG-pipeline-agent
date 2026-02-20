@@ -53,11 +53,11 @@ class LogisticRegressionClassifier(ClassifierBase):
         best_score = -1.0
         for C in self.C_grid:
             kwargs: dict = {
-                "penalty": "l2",
                 "C": C,
                 "max_iter": self.max_iter,
                 "solver": self.solver,
                 "random_state": 42,
+                "l1_ratio": 0,
             }
             try:
                 clf = LR(multi_class="multinomial", **kwargs)
@@ -87,12 +87,13 @@ class LogisticRegressionClassifier(ClassifierBase):
         else:
             self._selected_C = C
 
+        # sklearn 1.8+: avoid deprecated penalty='l2'; use l1_ratio=0 for L2
         kwargs: dict = {
-            "penalty": "l2",
             "C": C,
             "max_iter": self.max_iter,
             "solver": self.solver,
             "random_state": 42,
+            "l1_ratio": 0,
         }
         try:
             self._clf = LR(multi_class="multinomial", **kwargs)

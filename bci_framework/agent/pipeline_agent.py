@@ -433,10 +433,11 @@ class PipelineSelectionAgent:
                         sw_tr = sw_cal[train_idx] if sw_cal is not None else None
                         sid_tr = source_subject_ids[train_idx] if source_subject_ids is not None and len(source_subject_ids) == len(X_cal) else None
                         pipe_cv = _clone_pipeline(pipe)
+                        loso_tgt = loso_fold_info.get("target_subject") if loso_fold_info else None
                         if getattr(pipe_cv, "_transfer_enabled", False) and X_target_cal is not None and len(X_target_cal) > 0:
-                            pipe_cv.fit(X_tr, y_tr, X_target=X_target_cal, sample_weight=sw_tr, subject_ids=sid_tr)
+                            pipe_cv.fit(X_tr, y_tr, X_target=X_target_cal, sample_weight=sw_tr, subject_ids=sid_tr, loso_target_subject=loso_tgt)
                         else:
-                            pipe_cv.fit(X_tr, y_tr, sample_weight=sw_tr, subject_ids=sid_tr)
+                            pipe_cv.fit(X_tr, y_tr, sample_weight=sw_tr, subject_ids=sid_tr, loso_target_subject=loso_tgt)
                         pred_val = pipe_cv.predict(X_val)
                         cv_accs.append(_accuracy(y_val, pred_val))
                         # MOABB-style: free fold arrays on LOSO/transfer to reduce peak RAM
@@ -460,10 +461,11 @@ class PipelineSelectionAgent:
                     cv_fits_executed += len(cv_accs)
                 cv_fits_executed += 1  # final fit on full calibration
 
+                loso_tgt = loso_fold_info.get("target_subject") if loso_fold_info else None
                 if getattr(pipe, "_transfer_enabled", False) and X_target_cal is not None and len(X_target_cal) > 0:
-                    pipe.fit(X_cal, y_cal, X_target=X_target_cal, sample_weight=sw_cal, subject_ids=source_subject_ids)
+                    pipe.fit(X_cal, y_cal, X_target=X_target_cal, sample_weight=sw_cal, subject_ids=source_subject_ids, loso_target_subject=loso_tgt)
                 else:
-                    pipe.fit(X_cal, y_cal, sample_weight=sw_cal, subject_ids=source_subject_ids)
+                    pipe.fit(X_cal, y_cal, sample_weight=sw_cal, subject_ids=source_subject_ids, loso_target_subject=loso_tgt)
                 pred, latency_ms = pipe.predict_with_latency(X_cal)
                 proba = pipe.predict_proba(X_cal)
                 train_acc = _accuracy(y_cal, pred)

@@ -255,12 +255,22 @@ def run_one_loso_fold(
     source_subjects = [s for s in subjects if s != holdout]
     assert holdout not in source_subjects, "LOSO: target must not be in source"
 
+    from bci_framework.utils.leakage_guard import assert_no_leakage_split
+    src_mask = subject_ids != holdout
+    tgt_mask = subject_ids == holdout
+    train_idx = np.where(src_mask)[0]
+    test_idx = np.where(tgt_mask)[0]
+    assert_no_leakage_split(
+        train_idx, test_idx,
+        subject_ids=subject_ids,
+        evaluation_mode="loso",
+        context="run_one_loso_fold holdout=%s" % holdout,
+    )
+
     transfer_mode = config.get("transfer", {}).get("transfer_mode", "unsupervised")
     if config.get("transfer", {}).get("enabled"):
         logger.info("[TRANSFER] Mode: %s", transfer_mode)
 
-    src_mask = subject_ids != holdout
-    tgt_mask = subject_ids == holdout
     X_source = X[src_mask]
     y_source = y[src_mask]
     source_subject_ids = subject_ids[src_mask]
@@ -353,10 +363,34 @@ def run_one_loso_fold(
 
     kept = agent.prune(pipelines)
     agent.select_top_n(kept)
-    try:
-        best = agent.select_best(pipelines)
-    except RuntimeError:
-        best = None
+    ensemble_top_k = config.get("agent", {}).get("ensemble_top_k", 1)
+    top_list = agent.get_top_pipelines()[: max(2, int(ensemble_top_k))] if ensemble_top_k >= 2 else []
+    use_ensemble = ensemble_top_k >= 2 and len(top_list) >= 2
+    best = None
+    if use_ensemble:
+        # Refit top-k on full source, then average predict_proba on target test (no single "best" pipeline)
+        try:
+            for p in top_list:
+                p.fit(X_source, y_source)
+            probas = []
+            for p in top_list:
+                proba = p.predict_proba(X_target_test)
+                probas.append(proba)
+            proba_avg = np.mean(probas, axis=0)
+            y_pred_ensemble = np.argmax(proba_avg, axis=1).astype(np.int64)
+            test_acc_ensemble = float(np.mean(y_pred_ensemble == y_target_test))
+            cv_mean_ensemble = None
+            if top_list and metrics.get(top_list[0].name) is not None:
+                m0 = metrics[top_list[0].name]
+                cv_mean_ensemble = m0.cv_accuracy if m0.cv_accuracy is not None else m0.accuracy
+        except Exception as e:
+            logger.warning("[LOSO] Ensemble failed: %s; falling back to single best", e)
+            use_ensemble = False
+    if not use_ensemble:
+        try:
+            best = agent.select_best(pipelines)
+        except RuntimeError:
+            best = None
 
     debug_info = {}
     extras: dict = {}
@@ -422,7 +456,17 @@ def run_one_loso_fold(
         logger.info("[MEM] After classifier fit RSS: %.2f GB", _get_memory_gb())
 
     cv_mean = None
-    if best is not None and n_test > 0:
+    if use_ensemble and n_test > 0:
+        cv_mean = cv_mean_ensemble
+        test_acc = test_acc_ensemble
+        if return_diagnostics:
+            from bci_framework.utils.metrics import compute_all_metrics
+            trial_dur = config.get("agent", {}).get("trial_duration_sec", 3.0)
+            extras["test_metrics"] = compute_all_metrics(
+                y_target_test, y_pred_ensemble, proba_avg, n_classes, trial_duration_sec=trial_dur
+            )
+            extras["n_trials_test"] = n_test
+    elif best is not None and n_test > 0:
         m = metrics.get(best.name)
         if m:
             cv_mean = m.cv_accuracy or m.accuracy
@@ -440,6 +484,12 @@ def run_one_loso_fold(
         test_acc = 0.0
 
     del X_source, y_source, X_target_cal, X_target_test, y_target_cal, y_target_test, pipelines, metrics
+    if use_ensemble and top_list:
+        for p in top_list:
+            try:
+                del p
+            except Exception:
+                pass
     if best is not None:
         try:
             del best

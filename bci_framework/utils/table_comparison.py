@@ -11,7 +11,9 @@ AUC2OR for AUC-to-odds-ratio (auc_to_odds_ratio).
 
 from __future__ import annotations
 
+import csv
 import logging
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -253,6 +255,49 @@ def _permutation_test_paired(
     return observed, p_value
 
 
+def _cohens_d_paired(v1: list[float], v2: list[float]) -> float | None:
+    """Cohen's d for paired samples: mean(delta) / std(delta)."""
+    import numpy as np
+    v1_arr = np.asarray(v1, dtype=np.float64)
+    v2_arr = np.asarray(v2, dtype=np.float64)
+    d = v2_arr - v1_arr
+    n = len(d)
+    if n < 2:
+        return None
+    std_d = float(np.std(d))
+    if std_d <= 0:
+        return 0.0
+    return float(np.mean(d) / std_d)
+
+
+def _bootstrap_ci_paired(
+    v1: list[float],
+    v2: list[float],
+    statistic: str = "mean_delta",
+    n_boot: int = 2000,
+    confidence: float = 0.95,
+    random_state: int = 42,
+) -> tuple[float | None, float | None]:
+    """Bootstrap 95% CI for paired difference (mean_delta). Returns (ci_low, ci_high)."""
+    import numpy as np
+    v1_arr = np.asarray(v1, dtype=np.float64)
+    v2_arr = np.asarray(v2, dtype=np.float64)
+    d = v2_arr - v1_arr
+    n = len(d)
+    if n < 2:
+        return None, None
+    rng = np.random.default_rng(random_state)
+    boot_means = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        boot_means.append(float(np.mean(d[idx])))
+    boot_means = np.array(boot_means)
+    alpha = 1 - confidence
+    low = float(np.percentile(boot_means, 100 * alpha / 2))
+    high = float(np.percentile(boot_means, 100 * (1 - alpha / 2)))
+    return low, high
+
+
 def compare_tables(
     table_1: list[dict[str, Any]],
     table_2: list[dict[str, Any]],
@@ -261,20 +306,25 @@ def compare_tables(
     name_1: str = "Pipeline_A",
     name_2: str = "Pipeline_B",
     n_perm: int = DEFAULT_N_PERM,
+    include_effect_size: bool = False,
+    include_bootstrap_ci: bool = False,
+    n_bootstrap: int = 2000,
 ) -> dict[str, Any]:
     """
     Paired comparison of the same metric across two tables (same subjects).
+    Tests operate on aligned subject IDs only.
 
     test: "ttest" (paired t-test), "wilcoxon" (Wilcoxon signed-rank),
-    or "permutation" (non-parametric permutation test; distribution-free).
+    or "permutation" (paired permutation test: shuffle sign of (B-A); default, distribution-free).
     n_perm: number of permutations when test="permutation" (default 10000).
     Returns dict with: statistic, p_value, mean_1, mean_2, std_1, std_2,
     mean_delta, std_delta, n_subjects, significant (bool at alpha=0.05), test_used.
+    If include_effect_size: add cohens_d. If include_bootstrap_ci: add bootstrap_ci_95_low, bootstrap_ci_95_high.
     """
     v1, v2, subject_ids = _align_tables(table_1, table_2, metric)
     n = len(v1)
     if n < 2:
-        return {
+        out = {
             "metric": metric,
             "n_subjects": n,
             "test_used": test,
@@ -289,6 +339,11 @@ def compare_tables(
             "significant": False,
             "error": "Need at least 2 subjects in common with valid metric",
         }
+        if include_effect_size:
+            out["cohens_d"] = None
+        if include_bootstrap_ci:
+            out["bootstrap_ci_95_low"] = out["bootstrap_ci_95_high"] = None
+        return out
     import numpy as np
     v1_arr = np.asarray(v1, dtype=np.float64)
     v2_arr = np.asarray(v2, dtype=np.float64)
@@ -296,7 +351,7 @@ def compare_tables(
     mean_2 = float(np.mean(v2_arr))
     std_1 = float(np.std(v1_arr)) if n > 1 else 0.0
     std_2 = float(np.std(v2_arr)) if n > 1 else 0.0
-    deltas = v2_arr - v1_arr  # Table_2 - Table_1
+    deltas = v2_arr - v1_arr  # Table_2 - Table_1 (B - A)
     mean_delta = float(np.mean(deltas))
     std_delta = float(np.std(deltas)) if n > 1 else 0.0
 
@@ -331,9 +386,10 @@ def compare_tables(
             logger.warning("Permutation test failed: %s", e)
             test_used = "permutation_failed"
 
-    return {
+    result: dict[str, Any] = {
         "metric": metric,
         "n_subjects": n,
+        "subject_ids": subject_ids,
         "test_used": test_used,
         "name_1": name_1,
         "name_2": name_2,
@@ -343,10 +399,17 @@ def compare_tables(
         "std_2": round(std_2, 6),
         "mean_delta": round(mean_delta, 6),
         "std_delta": round(std_delta, 6),
-        "statistic": (round(statistic, 6) if statistic == statistic else None) if statistic is not None else None,
-        "p_value": (round(p_value, 6) if p_value == p_value else None) if p_value is not None else None,
+        "statistic": (round(statistic, 6) if statistic is not None and statistic == statistic else None) if statistic is not None else None,
+        "p_value": (round(p_value, 6) if p_value is not None and p_value == p_value else None) if p_value is not None else None,
         "significant": p_value is not None and p_value == p_value and p_value < 0.05,
     }
+    if include_effect_size:
+        result["cohens_d"] = round(_cohens_d_paired(v1, v2) or 0.0, 6)
+    if include_bootstrap_ci:
+        ci_lo, ci_hi = _bootstrap_ci_paired(v1, v2, n_boot=n_bootstrap, random_state=42)
+        result["bootstrap_ci_95_low"] = round(ci_lo, 6) if ci_lo is not None else None
+        result["bootstrap_ci_95_high"] = round(ci_hi, 6) if ci_hi is not None else None
+    return result
 
 
 def compare_tables_multi_metric(
@@ -366,3 +429,238 @@ def compare_tables_multi_metric(
             table_1, table_2, metric=m, test=test, name_1=name_1, name_2=name_2, n_perm=n_perm
         )
     return results
+
+
+def compare_tables_multi_metric_research(
+    table_1: list[dict[str, Any]],
+    table_2: list[dict[str, Any]],
+    metrics: list[str] | None = None,
+    name_1: str = "Pipeline_A",
+    name_2: str = "Pipeline_B",
+    n_perm: int = DEFAULT_N_PERM,
+    n_bootstrap: int = 2000,
+) -> dict[str, Any]:
+    """
+    Research-grade comparison: for each metric run permutation (default), Wilcoxon, t-test,
+    plus effect size (Cohen's d) and bootstrap 95% CI. Operates on aligned subject IDs only.
+    Returns dict: {metric: {permutation: {...}, wilcoxon: {...}, ttest: {...}, cohens_d, bootstrap_ci_95}}.
+    """
+    import numpy as np
+    metrics = metrics or ["accuracy", "balanced_accuracy", "roc_auc_macro", "kappa", "f1_macro"]
+    out: dict[str, Any] = {"name_1": name_1, "name_2": name_2, "metrics": {}}
+    for m in metrics:
+        v1, v2, subject_ids = _align_tables(table_1, table_2, m)
+        n = len(v1)
+        if n < 2:
+            out["metrics"][m] = {"error": "Need at least 2 subjects", "n_subjects": n}
+            continue
+        perm = compare_tables(
+            table_1, table_2, metric=m, test="permutation",
+            name_1=name_1, name_2=name_2, n_perm=n_perm,
+            include_effect_size=True, include_bootstrap_ci=True, n_bootstrap=n_bootstrap,
+        )
+        wilcoxon = compare_tables(
+            table_1, table_2, metric=m, test="wilcoxon",
+            name_1=name_1, name_2=name_2, n_perm=n_perm,
+        )
+        ttest = compare_tables(
+            table_1, table_2, metric=m, test="ttest",
+            name_1=name_1, name_2=name_2, n_perm=n_perm,
+        )
+        out["metrics"][m] = {
+            "n_subjects": n,
+            "subject_ids": subject_ids,
+            "permutation": perm,
+            "wilcoxon": wilcoxon,
+            "ttest": ttest,
+            "cohens_d": perm.get("cohens_d"),
+            "bootstrap_ci_95": [perm.get("bootstrap_ci_95_low"), perm.get("bootstrap_ci_95_high")],
+            "mean_1": perm.get("mean_1"),
+            "mean_2": perm.get("mean_2"),
+            "mean_delta": perm.get("mean_delta"),
+            "p_value_permutation": perm.get("p_value"),
+            "significant_05": perm.get("significant"),
+        }
+    return out
+
+
+def export_pipeline_comparison_report(
+    comparison: dict[str, Any],
+    path_json: str | None = None,
+    path_csv: str | None = None,
+    path_latex: str | None = None,
+) -> None:
+    """
+    Export pipeline comparison to publication-ready files.
+    comparison: output of compare_tables_multi_metric_research (or compare_tables_multi_metric with permutation).
+    """
+    import csv
+    from pathlib import Path
+    if path_json:
+        import json
+        Path(path_json).parent.mkdir(parents=True, exist_ok=True)
+        with open(path_json, "w", encoding="utf-8") as f:
+            json.dump(comparison, f, indent=2)
+        logger.info("Wrote pipeline comparison JSON: %s", path_json)
+    if path_csv:
+        _write_comparison_csv(comparison, path_csv)
+    if path_latex:
+        _write_comparison_latex(comparison, path_latex)
+
+
+def _write_comparison_csv(comparison: dict[str, Any], path: str) -> None:
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    metrics = comparison.get("metrics", comparison) if "metrics" in comparison else comparison
+    if isinstance(metrics, dict) and metrics and isinstance(next(iter(metrics.values())), dict):
+        rows = []
+        for metric, res in metrics.items():
+            if isinstance(res, dict) and "error" not in res:
+                perm = res.get("permutation") or res
+                rows.append({
+                    "metric": metric,
+                    "mean_A": perm.get("mean_1"),
+                    "mean_B": perm.get("mean_2"),
+                    "mean_delta": perm.get("mean_delta"),
+                    "p_value_permutation": res.get("p_value_permutation") or perm.get("p_value"),
+                    "cohens_d": res.get("cohens_d") or perm.get("cohens_d"),
+                    "significant_05": res.get("significant_05") or perm.get("significant"),
+                })
+        if rows:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                w.writeheader()
+                w.writerows(rows)
+            logger.info("Wrote pipeline comparison CSV: %s", path)
+        return
+    # Fallback: single-metric style
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["metric", "mean_1", "mean_2", "mean_delta", "p_value", "significant"])
+        for metric, res in (metrics if isinstance(metrics, dict) else {}).items():
+            if isinstance(res, dict):
+                w.writerow([
+                    metric,
+                    res.get("mean_1"),
+                    res.get("mean_2"),
+                    res.get("mean_delta"),
+                    res.get("p_value"),
+                    res.get("significant"),
+                ])
+    logger.info("Wrote pipeline comparison CSV: %s", path)
+
+
+def _write_comparison_latex(comparison: dict[str, Any], path: str) -> None:
+    from pathlib import Path
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    name_1 = comparison.get("name_1", "Pipeline_A")
+    name_2 = comparison.get("name_2", "Pipeline_B")
+    metrics = comparison.get("metrics", comparison) if "metrics" in comparison else comparison
+    lines = [
+        "\\begin{table}[t]",
+        "\\centering",
+        "\\caption{Pipeline comparison: %s vs %s (paired permutation test, aligned subjects).}" % (name_1, name_2),
+        "\\label{tab:pipeline_comparison}",
+        "\\begin{tabular}{lcccccc}",
+        "\\toprule",
+        "Metric & Mean (%s) & Mean (%s) & $\\Delta$ & $p$ (perm.) & Cohen's $d$ & Sig. \\\\" % (name_1, name_2),
+        "\\midrule",
+    ]
+    if isinstance(metrics, dict):
+        for metric, res in metrics.items():
+            if isinstance(res, dict) and "error" not in res:
+                m1 = res.get("mean_1") if res.get("mean_1") is not None else "---"
+                m2 = res.get("mean_2") if res.get("mean_2") is not None else "---"
+                delta = res.get("mean_delta") if res.get("mean_delta") is not None else "---"
+                p = res.get("p_value_permutation") or (res.get("permutation") or {}).get("p_value")
+                p = "%.4f" % p if p is not None else "---"
+                d = res.get("cohens_d")
+                d = "%.3f" % d if d is not None else "---"
+                sig = "Yes" if res.get("significant_05") else "No"
+                lines.append("%s & %s & %s & %s & %s & %s & %s \\\\" % (metric.replace("_", " "), m1, m2, delta, p, d, sig))
+    lines.extend(["\\bottomrule", "\\end{tabular}", "\\end{table}"])
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
+    logger.info("Wrote pipeline comparison LaTeX: %s", path)
+
+
+def build_ablation_table(
+    all_tables: dict[str, list],
+    reference_name: str = "Riemann_MDM",
+    metric: str = "accuracy",
+    n_perm: int = DEFAULT_N_PERM,
+) -> tuple[list[dict], str]:
+    """
+    Build ablation table: for each method compute mean ± std LOSO and p vs reference (permutation), Cohen's d.
+    all_tables: {method_name: list[dict]} with subject-level rows (subject_id, accuracy, ...).
+    Returns (rows for CSV, LaTeX table string).
+    """
+    import numpy as np
+    from pathlib import Path
+
+    ref_table = all_tables.get(reference_name)
+    if not ref_table:
+        reference_name = next(iter(all_tables), "")
+        ref_table = all_tables.get(reference_name)
+
+    order = [
+        "CSP_LDA", "Riemann_MDM", "Tangent_LR", "FilterBankRiemann", "EEGNet",
+        "EA_Tangent_LR",
+        "AutoML", "AutoML_Ensemble",
+    ]
+    rows = []
+    for name in order:
+        table = all_tables.get(name)
+        if not table:
+            continue
+        accs = []
+        for r in table:
+            a = r.get(metric)
+            if a is not None and str(a).strip() and not str(a).startswith("#"):
+                try:
+                    accs.append(float(a))
+                except (TypeError, ValueError):
+                    pass
+        if not accs:
+            continue
+        mean_acc = float(np.mean(accs))
+        std_acc = float(np.std(accs, ddof=1)) if len(accs) > 1 else 0.0
+        p_val = None
+        cohens_d = None
+        if ref_table and name != reference_name:
+            comp = compare_tables(
+                table, ref_table, metric=metric, test="permutation",
+                name_1=name, name_2=reference_name, n_perm=n_perm,
+                include_effect_size=True,
+            )
+            p_val = comp.get("p_value")
+            cohens_d = comp.get("cohens_d")
+        rows.append({
+            "method": name,
+            "mean_loso": mean_acc,
+            "std_loso": std_acc,
+            "p_vs_ref": p_val,
+            "effect_size": cohens_d,
+        })
+
+    # LaTeX
+    latex_lines = [
+        "\\begin{table}[t]",
+        "\\centering",
+        "\\caption{LOSO ablation (reference: %s). Mean $\\pm$ std accuracy; $p$ from paired permutation; Cohen's $d$.}" % reference_name,
+        "\\label{tab:ablation}",
+        "\\begin{tabular}{lcccc}",
+        "\\toprule",
+        "Method & Mean LOSO (\\%%) & Std & $p$ vs %s & Cohen's $d$ \\\\" % reference_name,
+        "\\midrule",
+    ]
+    for r in rows:
+        mean_pct = r["mean_loso"] * 100
+        std_pct = r["std_loso"] * 100
+        p_str = "%.4f" % r["p_vs_ref"] if r["p_vs_ref"] is not None else "---"
+        d_str = "%.3f" % r["effect_size"] if r["effect_size"] is not None else "---"
+        latex_lines.append(
+            "%s & %.2f & %.2f & %s & %s \\\\"
+            % (r["method"].replace("_", " "), mean_pct, std_pct, p_str, d_str)
+        )
+    latex_lines.extend(["\\bottomrule", "\\end{tabular}", "\\end{table}"])
+    latex_str = "\n".join(latex_lines)
+    return rows, latex_str

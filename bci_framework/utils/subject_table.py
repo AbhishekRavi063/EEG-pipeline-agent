@@ -105,3 +105,58 @@ def load_table_json(path: str | Path) -> tuple[list[dict[str, Any]], dict[str, A
     table = data.get("table", data) if isinstance(data, dict) else data
     meta = data.get("meta", {}) if isinstance(data, dict) else {}
     return table, meta
+
+
+def subject_table_summary(
+    table: list[dict[str, Any]],
+    metric_columns: list[str] | None = None,
+) -> dict[str, dict[str, float]]:
+    """
+    Compute mean ± std across subjects for each metric (publication-ready summary).
+    Returns {metric: {"mean": float, "std": float}}.
+    """
+    metric_columns = metric_columns or TABLE_METRIC_COLUMNS
+    import numpy as np
+    summary: dict[str, dict[str, float]] = {}
+    for col in metric_columns:
+        values = [row[col] for row in table if row.get(col) is not None]
+        if not values:
+            continue
+        arr = np.asarray(values, dtype=np.float64)
+        summary[col] = {"mean": float(np.mean(arr)), "std": float(np.std(arr)) if len(arr) > 1 else 0.0}
+    return summary
+
+
+def save_subject_level_results(
+    table: list[dict[str, Any]],
+    results_dir: str | Path,
+    experiment_id: str,
+    filename: str = "subject_level_results.csv",
+    metric_columns: list[str] | None = None,
+    include_summary: bool = True,
+) -> Path:
+    """
+    Save publication-ready subject-level table to results/<experiment_id>/<filename>.
+    Default filename: subject_level_results.csv. Adds mean ± std summary at end of file.
+    """
+    path = Path(results_dir) / experiment_id / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    metric_columns = metric_columns or TABLE_METRIC_COLUMNS
+    cols = ["subject_id"]
+    if table and table[0].get("pipeline_name") is not None:
+        cols.append("pipeline_name")
+    cols += [c for c in metric_columns if table and any(row.get(c) is not None for row in table)]
+    if not cols:
+        cols = ["subject_id"] + metric_columns
+    lines = [",".join(str(c) for c in cols)]
+    for row in table:
+        lines.append(",".join(str(row.get(c, "")) for c in cols))
+    if include_summary and table:
+        summary = subject_table_summary(table, metric_columns)
+        lines.append("")
+        lines.append("# Summary (mean ± std across subjects)")
+        for metric, s in summary.items():
+            lines.append("# %s: %.6f ± %.6f" % (metric, s["mean"], s["std"]))
+    path.write_text("\n".join(lines), encoding="utf-8")
+    logger.info("Wrote subject-level results: %s (%d rows + summary)", path, len(table))
+    return path
