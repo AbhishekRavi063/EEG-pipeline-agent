@@ -64,6 +64,7 @@ class GEDAIArtifactRemoval(AdvancedPreprocessingBase):
         update_interval_sec: float = 1.0,  # How often to recompute eigenvectors
         device: str | None = None,  # "cpu", "cuda", "mps", or None (auto-detect)
         cov_recompute_post_gedai: bool = False,  # For CSP compatibility
+        debug: bool = False,  # Print shape before/after, eigenvalue count
         **kwargs: Any,
     ) -> None:
         if not GEDAI_AVAILABLE:
@@ -89,6 +90,7 @@ class GEDAIArtifactRemoval(AdvancedPreprocessingBase):
         self.use_identity_if_missing = bool(use_identity_if_missing)
         self.require_real_leadfield = bool(require_real_leadfield)
         self.mode = str(mode).lower()
+        self.debug = bool(debug)
         self.window_sec = float(window_sec)
         self.update_interval_sec = float(update_interval_sec)
         self.cov_recompute_post_gedai = bool(cov_recompute_post_gedai)
@@ -224,6 +226,8 @@ class GEDAIArtifactRemoval(AdvancedPreprocessingBase):
         import torch
 
         n_trials, n_ch, n_samp = X.shape
+        if self.debug:
+            print("[GEDAI DEBUG] fit: X_train shape=%s (train indices only, no test data)" % (X.shape,), flush=True)
         leadfield = self._get_leadfield(n_ch)
 
         if self.mode == "sliding":
@@ -232,8 +236,11 @@ class GEDAIArtifactRemoval(AdvancedPreprocessingBase):
             data_cov = self._compute_sliding_covariance(X)
             self._update_eigenvectors_sliding(data_cov, leadfield)
             self._last_update_sample = n_trials * n_samp
+            if self.debug and self._eigenvalues is not None:
+                n_ev = len(self._eigenvalues)
+                print("[GEDAI DEBUG] fit: eigenvalues count=%d" % n_ev, flush=True)
         else:
-            # Batch mode: no special initialization needed
+            # Batch mode: fit done inside transform via batch_gedai; no eigenvectors stored here
             pass
 
         self._fitted = True
@@ -246,6 +253,8 @@ class GEDAIArtifactRemoval(AdvancedPreprocessingBase):
             return X
 
         n_trials, n_ch, n_samp = X.shape
+        if self.debug:
+            print("[GEDAI DEBUG] transform: input shape before GEDAI=%s" % (X.shape,), flush=True)
         leadfield = self._get_leadfield(n_ch)
 
         if self.mode == "sliding":
@@ -276,6 +285,8 @@ class GEDAIArtifactRemoval(AdvancedPreprocessingBase):
             X_cleaned_t = X_t @ proj.T
 
             out = X_cleaned_t.cpu().numpy().reshape(n_trials, n_samp, n_ch).transpose(0, 2, 1)
+            if self.debug:
+                print("[GEDAI DEBUG] transform: output shape after GEDAI=%s" % (out.shape,), flush=True)
             return out.astype(np.float64)
 
         else:
@@ -308,4 +319,6 @@ class GEDAIArtifactRemoval(AdvancedPreprocessingBase):
                 logger.warning("GEDAI output shape %s != input %s", out.shape, X.shape)
                 return X
 
+            if self.debug:
+                print("[GEDAI DEBUG] transform: output shape after GEDAI=%s" % (out.shape,), flush=True)
             return out.astype(np.float64)

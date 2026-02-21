@@ -305,6 +305,10 @@ When transfer.enabled is true (e.g. LOSO): adapter fits on source features + unl
 
   download_bci_iv_2a.sh — Download BCI IV 2a GDF files.
 
+  run_denoising_comparison.py — Compare denoising: bandpass only vs bandpass+ICA vs bandpass+GEDAI on classification (same pipeline). Optional: --dataset PhysionetMI, --n-subjects 10. See §22 Professor feedback.
+
+  run_preprocessing_evaluation.py — **Preprocessing evaluation (ICA vs baseline):** Physionet MI (MOABB), all subjects, motor imagery only, trial 0–3 s, 250 Hz. **LOSO removed; GEDAI disabled.** Only subject-wise GroupKFold(5). Fixed classifier: Bandpass 8–30 Hz, OAS, tangent, StandardScaler, LR (C grid). Conditions: A = bandpass only, B = bandpass+ICA. ICA fit only on training subjects per fold. Metrics: Accuracy, Macro AUC, Cohen's Kappa. Stats: ICA vs Baseline (paired permutation 10k, Cohen's d, bootstrap 95% CI). Output: subject_level_results.csv (fold_id, condition, accuracy, auc_macro, kappa), preprocessing_evaluation_metadata.json (dataset_name, n_subjects, total_trials, class_distribution, random_state, n_splits, hyperparameter_grid, permutation_n). Validation: tests/test_preprocessing_evaluation.py (no subject leakage, ICA fit scope, baseline reproducibility, permutation sanity, StratifiedKFold vs GroupKFold inflation).
+
   examples/ — run_offline.py, run_online.py, bci_automl_minimal_example.ipynb (run with PYTHONPATH=. or PYTHONPATH=.. from examples/).
 
 
@@ -383,6 +387,14 @@ Per pipeline under results/experiment_id/pipeline_name/: raw EEG plot, filtered 
   Memory: Compare runs LOSO per subject; tables built incrementally. Backend: Data loaded once for requested subjects; per-holdout fold runs; tables = list of dicts (one row per subject).
 
 
-22. License
+22. Professor Feedback & Next Steps
+
+  **Cross-validation (attached paper):** LOSO is less reliable than k-fold when the number of subjects is small. The referenced paper (J. Neurosci. Methods, doi:10.1016/j.jneumeth.2015.01.010) recommends within-session k-fold cross-validation for more stable estimates. MOABB benchmarks use **within-session 5-fold CV** (see [MOABB paper results](https://moabb.neurotechx.com/docs/paper_results.html)). For small subject counts, prefer reporting **within-subject k-fold** (e.g. 5-fold) mean accuracy in addition to or instead of LOSO.
+
+  **Larger dataset:** BNCI2014_001 has only **9 subjects**. For more reliable statistics, use a larger MOABB dataset: e.g. **PhysionetMI** (109 subjects, 4-class MI) or **Schirrmeister2017** (14 subjects). Set `dataset.name: "MOABB"`, `dataset.dataset_name: "PhysionetMI"` (or `BNCI2014_001`) in config; MOABB loader supports both (see `bci_framework/datasets/moabb_loader.py`).
+
+  **Denoising comparison (requested):** Instead of focusing on "Riemannian wins", compare **denoising** impact: run the same pipeline with (1) **bandpass only**, (2) **bandpass + ICA**, (3) **bandpass + GEDAI**, and report classification performance. Use `scripts/run_denoising_comparison.py` (see below). Config: `advanced_preprocessing.enabled` = `[]` (bandpass only), `["ica"]`, or `["gedai"]` (GEDAI needs leadfield or identity for testing).
+
+23. License
 
 Use and extend for research and product development as needed. Publish code with the paper as suggested in the professor's workflow.

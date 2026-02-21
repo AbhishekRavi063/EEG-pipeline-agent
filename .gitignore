@@ -33,3 +33,6 @@ build/
 
 *.ipynb_checkpoints/
 *.DS_Store
+
+# Optional: uncomment to avoid pushing large PDFs (e.g. reference papers)
+# *.pdf

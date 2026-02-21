@@ -12,6 +12,15 @@ from .multi_subject_runner import (
     run_baselines_loso,
     BASELINE_PRESETS,
 )
+from .preprocessing_evaluation import (
+    load_physionet_mi,
+    run_full_evaluation,
+    run_one_fold,
+    run_group_kfold,
+    RANDOM_STATE,
+    N_PERM,
+    CONDITION_LABELS,
+)
 
 __all__ = [
     "run_table_for_config",
@@ -24,4 +33,11 @@ __all__ = [
     "get_ea_tangent_lr_config",
     "run_baselines_loso",
     "BASELINE_PRESETS",
+    "load_physionet_mi",
+    "run_full_evaluation",
+    "run_one_fold",
+    "run_group_kfold",
+    "RANDOM_STATE",
+    "N_PERM",
+    "CONDITION_LABELS",
 ]
